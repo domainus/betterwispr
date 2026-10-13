@@ -15,9 +15,14 @@ BetterWispr is a private, offline speech-to-text app and an open-source alternat
 ## Features
 
 - **Dictate anywhere**: hold-to-talk or press-to-toggle, with a shortcut you choose.
-- **On-device models**: Apple speech, Parakeet v3 (25 European languages), Parakeet v2 (English) and Whisper large-v3 turbo.
+- **On-device models**: Apple speech, Parakeet (Ultra, v3, Redux, v2, Phonon-2, 110M, Japanese), Cohere Transcribe, Canary 1B v2 and Whisper (Large v3 Turbo, Large v3, Distil Large v3, Small, Base).
 - **Vocabulary**: spelling hints and phrase replacements for names and jargon.
-- **Learns your corrections**: fix a misheard word once (in History, or right after it's pasted) and it's spelled right next time.
+- **Learns your corrections**: fix a misheard word once (in History, or right after it's pasted) and it's spelled right next time. Change a learned word back and it's forgotten.
+- **Spells what's on screen**: names and product words in the window you dictate into, such as the people in a chat, help Parakeet and Apple speech spell them. Read on your Mac, never saved.
+- **Snippets**: say "my calendar link" and BetterWispr types your saved link, address or sign-off exactly as you wrote it.
+- **Local cleanup with S1-mini**: Medium cleanup can run S1-mini by Superwhisper in Ollama on your Mac (English). No cloud, no API key.
+- **Command Mode**: select text, hold a shortcut and say how to change it. The notes model you chose rewrites it in place, or writes new text at the cursor.
+- **Hands-free**: hold the shortcut to talk, or double-tap it to dictate hands-free and press it again to finish. Fn (🌐) works as the shortcut.
 - **Voice commands**: say "comma", "new line", "scratch that" or "sorry, remove that", and "at the rate KV" for "@KV".
 - **Meetings**: live transcript of you and the other side, plus on-device titles, summaries and action items with Apple Intelligence or a local Ollama model.
 - **History**: raw and corrected transcripts, stored locally (can be turned off).

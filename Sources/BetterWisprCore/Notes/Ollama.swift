@@ -8,7 +8,7 @@ public enum Ollama {
     /// Lists models stored in Ollama on this Mac that can write text, leaving out cloud and embedding models.
     public static func installedModels() async throws -> [String] {
         var names: [String] = []
-        for name in try JSONDecoder().decode(Tags.self, from: try await send("tags", timeout: 5)).localNames {
+        for name in try JSONDecoder().decode(Tags.self, from: try await send("tags", timeout: 5)).localNames where !S1MiniCleaner.isS1Mini(name) {
             let show = try JSONDecoder().decode(Show.self, from: try await send("show", ["model": name], timeout: 5))
             if show.capabilities.contains("completion") { names.append(name) }
         }
@@ -32,6 +32,42 @@ public enum Ollama {
             throw MeetingNotesError.unavailable("Ollama couldn’t write notes. \(reason)")
         }
         return data
+    }
+
+    /// One status line of `pull`; `completed` and `total` count bytes of the layer being downloaded.
+    public struct PullProgress: Decodable, Equatable, Sendable {
+        public let status: String
+        public var total: Int64?
+        public var completed: Int64?
+
+        public var fraction: Double? {
+            guard let total, total > 0 else { return nil }
+            return min(1, Double(completed ?? 0) / Double(total))
+        }
+    }
+
+    /// Downloads `model` into Ollama, reporting each status line. Cancelling the task stops the download;
+    /// Ollama resumes it from where it stopped on the next pull.
+    public static func pull(_ model: String, onProgress: @MainActor @Sendable (PullProgress) -> Void) async throws {
+        var request = URLRequest(url: api.appending(path: "pull"), cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 120)
+        request.httpMethod = "POST"
+        request.httpBody = try JSONSerialization.data(withJSONObject: ["model": model])
+        let bytes: URLSession.AsyncBytes, response: URLResponse
+        do { (bytes, response) = try await URLSession.shared.bytes(for: request) }
+        catch let error as URLError where error.code == .cannotConnectToHost {
+            throw MeetingNotesError.unavailable("Ollama isn’t running. Open Ollama and try again.")
+        }
+        let ok = (response as? HTTPURLResponse)?.statusCode == 200
+        var finished = false
+        for try await line in bytes.lines {
+            if let failure = try? JSONDecoder().decode(Failure.self, from: Data(line.utf8)) {
+                throw MeetingNotesError.unavailable("Ollama couldn’t download \(model). \(failure.error)")
+            }
+            guard ok, let progress = try? JSONDecoder().decode(PullProgress.self, from: Data(line.utf8)) else { continue }
+            finished = progress.status == "success"
+            await onProgress(progress)
+        }
+        guard finished else { throw MeetingNotesError.unavailable("Ollama stopped downloading \(model) before it finished.") }
     }
 
     struct Tags: Decodable {

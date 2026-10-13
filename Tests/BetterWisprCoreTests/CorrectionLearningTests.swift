@@ -189,3 +189,45 @@ private func replacing(_ heard: String, with corrected: String, action: String =
     #expect(shape(.reject) == nil)
     #expect(CorrectionDecision.vocabularyOnly("PostHog").entry()?.learned == true)
 }
+
+@Test func changingALearnedReplacementBackForgetsItInsteadOfLearningTheReverse() {
+    let meat = VocabularyEntry(phrase: "meet", replacement: "meat", learned: true)
+    let typed = VocabularyEntry(phrase: "kv", replacement: "KV")
+    let hint = VocabularyEntry(phrase: "PostHog", replacement: "", learned: true)
+    let vocabulary = [meat, typed, hint]
+    #expect(CorrectionLearner.reverted(vocabulary, from: "we can meat today", to: "we can meet today") == [meat])
+    #expect(CorrectionLearner.corrections(from: "we can meat today", to: "we can meet today").contains { $0.undoes(meat) })
+    #expect(CorrectionLearner.reverted(vocabulary, from: "we can meat today", to: "we can meal today").isEmpty)
+    #expect(CorrectionLearner.reverted(vocabulary, from: "ask KV now", to: "ask kv now").isEmpty)
+    #expect(CorrectionLearner.reverted(vocabulary, from: "check PostHog", to: "check post hog").isEmpty)
+    #expect(CorrectionLearner.reverted(vocabulary, from: "meat", to: "I said we should all meet up later").isEmpty)
+}
+
+@Test func changingAMultiwordReplacementBackForgetsIt() {
+    let postHog = VocabularyEntry(phrase: "post hog", replacement: "PostHog", learned: true)
+    #expect(CorrectionLearner.reverted([postHog], from: "check the PostHog numbers", to: "check the post hog numbers") == [postHog])
+}
+
+@Test func learningSkipsDeclinedSpellings() {
+    let decisions: [CorrectionDecision] = [.replacementAndVocabulary(heard: "meet", corrected: "meat"), .vocabularyOnly("Kartik")]
+    #expect(CorrectionDecision.entries(for: decisions, in: [], declined: ["meat"]).map(\.spelling) == ["Kartik"])
+}
+
+@Test func learningSkipsPathsAddressesAndCodeSymbols() {
+    #expect(CorrectionLearner.corrections(from: "open the read me file", to: "open the docs/README file").isEmpty)
+    #expect(CorrectionLearner.corrections(from: "email kumar at work", to: "email kumar@work.com at work").isEmpty)
+    #expect(CorrectionLearner.corrections(from: "call user id now", to: "call user_id now").isEmpty)
+}
+
+@Test func olderWorkspaceDecodesWithoutDeclinedTerms() throws {
+    let data = try JSONSerialization.data(withJSONObject: [
+        "version": 1, "history": [], "vocabulary": [],
+        "settings": try JSONSerialization.jsonObject(with: JSONEncoder().encode(AppSettings())),
+    ])
+    #expect(try JSONDecoder().decode(SavedState.self, from: data).declinedTerms == [])
+}
+
+@Test func learningSkipsVeryCommonFirstNames() {
+    let decisions: [CorrectionDecision] = [.vocabularyOnly("Sarah"), .replacementAndVocabulary(heard: "jon", corrected: "John"), .vocabularyOnly("Kartik")]
+    #expect(CorrectionDecision.entries(for: decisions, in: []).map(\.spelling) == ["Kartik"])
+}

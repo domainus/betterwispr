@@ -302,5 +302,52 @@ a conversion of [nvidia/parakeet-tdt_ctc-110m](https://huggingface.co/nvidia/par
 that its model card lists as CC-BY-4.0. Do not infer weight terms
 from an ONNX/Core ML/MLX conversion library's license.
 
+The optional Medium cleanup model S1-mini by Superwhisper
+([superwhisper/s1-mini](https://huggingface.co/superwhisper/s1-mini), GGUF build
+`hf.co/superwhisper/s1-mini-GGUF:Q4_K_M` at revision
+`34add00a48a2e5d24e5a4ee5405a99620a3a240c`) is a fine-tune of Qwen3-0.6B
+(copyright 2024 Alibaba Cloud, Apache-2.0). Its
+[LICENSE](https://huggingface.co/superwhisper/s1-mini/blob/main/LICENSE) is
+Apache-2.0, copyright 2026 Superwhisper, plus one additional term: any use or
+integration "must continue to identify it by its original name, "S1-mini" by
+"Superwhisper", using that exact capitalization". BetterWispr does not bundle
+or redistribute the weights; the user's Ollama downloads them only from the
+Download S1-mini button. Style names it "S1-mini by Superwhisper" and links the
+license. No Superwhisper code is copied: `S1MiniCleaner` sends the system
+prompt, control line and think-block prefix that the model card documents as
+the required input format. [`s1-mini.md`](s1-mini.md) records the research.
+
+Models added on 2026-10-13, with the Hugging Face revisions reviewed that day.
+All download from `main` through FluidAudio 0.17.5, so later uploads can change
+the files; the hashes record what was reviewed.
+
+| Catalog ID | Downloads | Converted from | Weight license (model card) |
+| --- | --- | --- | --- |
+| `parakeet-redux` | [FluidInference/parakeet-redux-coreml](https://huggingface.co/FluidInference/parakeet-redux-coreml) `8c5ef97a29cd120dc76b354b3f22b7fec3b486f9` | [moondream/parakeet-redux](https://huggingface.co/moondream/parakeet-redux), a retraining of NVIDIA Parakeet TDT 0.6B v3 | CC-BY-4.0 |
+| `phonon-2` | [FluidInference/phonon-2-coreml](https://huggingface.co/FluidInference/phonon-2-coreml) `1702fc22e76f203d5ca464cd5d3ef130a45ce2c0` | [FermionResearch/Phonon-2](https://huggingface.co/FermionResearch/Phonon-2), a retraining of Parakeet TDT 0.6B v3 | CC-BY-4.0 |
+| `cohere-transcribe` | [FluidInference/cohere-transcribe-03-2026-coreml](https://huggingface.co/FluidInference/cohere-transcribe-03-2026-coreml) `q8/` `7ca8c223e84c817a7e125c567c2582559dcd8e32` | [CohereLabs/cohere-transcribe-03-2026](https://huggingface.co/CohereLabs/cohere-transcribe-03-2026) | Apache-2.0 |
+| `canary-1b-v2` | [FluidInference/canary-1b-v2-coreml](https://huggingface.co/FluidInference/canary-1b-v2-coreml) int4 files, `a5567919114916212fadc1c9b80c168095b14ae2` | [nvidia/canary-1b-v2](https://huggingface.co/nvidia/canary-1b-v2) | CC-BY-4.0 |
+
+`Sources/BetterWisprCore/Speech/CohereProvider.swift` calls FluidAudio's public
+`CoherePipeline` (Apache-2.0); no FluidAudio source is copied. Its audio
+windowing is original BetterWispr code. The Cohere Labs repository is gated on
+Hugging Face with automatic approval; BetterWispr downloads only the
+FluidInference conversion, which is not gated and whose card lists Apache-2.0.
+
+`Sources/BetterWisprCore/Speech/CanaryProvider.swift` calls FluidAudio's public
+`CanaryManager` and `CanaryModels`; no FluidAudio source is copied. Its prompt for
+languages other than English follows the Canary 2 prompt format of
+`CanaryConfig.promptEnTranscribePnc` with the language token from the model's
+`vocab.json`.
+
+The added Whisper entries download from
+[argmaxinc/whisperkit-coreml](https://huggingface.co/argmaxinc/whisperkit-coreml)
+(MIT according to its card), revision `0f63a7800b00dd0226abd051b906c246e1907482` reviewed for folder
+names and sizes: `openai_whisper-large-v3` and `openai_whisper-base` with the
+`openai/whisper-large-v3` and `openai/whisper-base` tokenizers (OpenAI Whisper, MIT),
+and `distil-whisper_distil-large-v3`, a conversion of
+[distil-whisper/distil-large-v3](https://huggingface.co/distil-whisper/distil-large-v3),
+which its card lists as MIT and English-only, with the `openai/whisper-large-v3` tokenizer.
+
 The copied BetterShot development skills have separate provenance documented in
 [`skills.md`](skills.md).

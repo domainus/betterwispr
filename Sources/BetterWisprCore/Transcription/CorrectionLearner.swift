@@ -8,6 +8,12 @@ public struct LearnedCorrection: Equatable, Sendable {
         self.heard = heard
         self.corrected = corrected
     }
+
+    /// Whether this edit changes a learned replacement back to the words it replaced.
+    public func undoes(_ entry: VocabularyEntry) -> Bool {
+        entry.learned && !entry.replacement.isEmpty
+            && heard.caseInsensitiveCompare(entry.replacement) == .orderedSame && corrected.caseInsensitiveCompare(entry.phrase) == .orderedSame
+    }
 }
 
 public enum CorrectionLearner {
@@ -24,14 +30,24 @@ public enum CorrectionLearner {
 
     /// Returns word-level fixes the user made to dictated text, skipping rewrites and ordinary word swaps.
     public static func corrections(from original: String, to edited: String) -> [LearnedCorrection] {
-        let before = tokenize(original), after = tokenize(edited)
-        guard !before.isEmpty, !after.isEmpty, before != after else { return [] }
-        let substitutions = substitutions(before, after)
-        guard substitutions.count <= max(1, before.count / 2) else { return [] }
         var seen = Set<String>()
-        return substitutions.filter { change in
+        return wordEdits(from: original, to: edited).filter { change in
             seen.insert(change.corrected.lowercased()).inserted && isVocabulary(change)
         }
+    }
+
+    /// Learned replacements the user changed back in this edit, so they can be forgotten instead of learned in reverse.
+    public static func reverted(_ vocabulary: [VocabularyEntry], from original: String, to edited: String) -> [VocabularyEntry] {
+        let edits = wordEdits(from: original, to: edited)
+        return vocabulary.filter { entry in edits.contains { $0.undoes(entry) } }
+    }
+
+    /// Swaps of one to three words; none when the edit rewrote more than half the words.
+    private static func wordEdits(from original: String, to edited: String) -> [LearnedCorrection] {
+        let before = tokenize(original), after = tokenize(edited)
+        guard !before.isEmpty, !after.isEmpty, before != after else { return [] }
+        let edits = substitutions(before, after)
+        return edits.count <= max(1, before.count / 2) ? edits : []
     }
 
     /// Whether the heard phrase is an everyday word that must not be rewritten everywhere.
@@ -48,7 +64,8 @@ public enum CorrectionLearner {
 
     private static func isVocabulary(_ change: LearnedCorrection) -> Bool {
         let heard = change.heard.lowercased(), corrected = change.corrected.lowercased()
-        guard corrected.contains(where: \.isLetter) else { return false }
+        // Like Wispr Flow, skip paths, addresses and code symbols.
+        guard corrected.contains(where: \.isLetter), !corrected.contains(where: { "/\\@_".contains($0) }) else { return false }
         if heard == corrected { return change.corrected.dropFirst().contains(where: \.isUppercase) }
         if change.corrected.count < 3, !change.corrected.contains(where: \.isUppercase) { return false }
         if commonWords.contains(corrected) { return false }

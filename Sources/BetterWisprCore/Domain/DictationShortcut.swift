@@ -9,6 +9,9 @@ public struct ShortcutModifiers: OptionSet, Codable, Hashable, Sendable {
     public static let shift = ShortcutModifiers(rawValue: 1 << 9)
     public static let option = ShortcutModifiers(rawValue: 1 << 11)
     public static let control = ShortcutModifiers(rawValue: 1 << 12)
+    /// Fn (Globe), Carbon's `kEventKeyModifierFnMask`. Valid only as a modifier key alone,
+    /// because Carbon hotkeys can't require it.
+    public static let function = ShortcutModifiers(rawValue: 1 << 17)
 
     fileprivate static let names: [(modifier: ShortcutModifiers, symbol: String, spoken: String)] = [
         (.control, "⌃", "Control"), (.option, "⌥", "Option"), (.shift, "⇧", "Shift"), (.command, "⌘", "Command")
@@ -36,7 +39,8 @@ public struct DictationShortcut: Codable, Equatable, Sendable {
         if Self.modifier(for: keyCode) != nil {
             guard modifiers.isEmpty else { return nil }
         } else {
-            guard Self.functionKeyCodes.contains(keyCode) || !modifiers.isDisjoint(with: [.control, .option, .command]) else { return nil }
+            guard !modifiers.contains(.function),
+                  Self.functionKeyCodes.contains(keyCode) || !modifiers.isDisjoint(with: [.control, .option, .command]) else { return nil }
         }
         self.init(validKeyCode: keyCode, modifiers: modifiers, key: key)
     }
@@ -47,6 +51,7 @@ public struct DictationShortcut: Codable, Equatable, Sendable {
         case kVK_Option, kVK_RightOption: .option
         case kVK_Shift, kVK_RightShift: .shift
         case kVK_Command, kVK_RightCommand: .command
+        case kVK_Function: .function
         default: nil
         }
     }

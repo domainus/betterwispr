@@ -33,6 +33,8 @@ public final class ParakeetProvider: SpeechProvider {
         case "parakeet-tdt-0.6b-v3": (.v3, .parakeetV3, 471)
         case "parakeet-tdt-0.6b-v2": (.v2, .parakeetV2, 460)
         case "parakeet-ultra": (.ultra, .parakeetUltra, 630)
+        case "parakeet-redux": (.redux, .parakeetRedux, 220)
+        case "phonon-2": (.phonon2, .phonon2, 376)
         case "parakeet-tdt-ctc-110m": (.tdtCtc110m, .parakeetTdtCtc110m, 230)
         case "parakeet-ja": (.tdtJa, .parakeetJa, 620)
         default: nil
@@ -139,6 +141,8 @@ public final class ParakeetProvider: SpeechProvider {
         try Task.checkCancellation()
         let folder = Self.folder(for: model, modelsDirectory: modelsDirectory)
         if download && !Self.isInstalled(model, modelsDirectory: modelsDirectory) {
+            // Redux and Phonon-2 encoders use macOS 15 Core ML operations; don't fetch files this Mac can't load.
+            if let version = model.minimumMacOS, !model.isSupported { throw SpeechError.needsNewerMacOS(model: model.name, version: version) }
             try FileManager.default.createDirectory(at: folder.deletingLastPathComponent(), withIntermediateDirectories: true)
             onProgress?(0)
             try await Self.download(source, to: folder, withBooster: !Self.isPhraseBoosterInstalled(), progress: onProgress)

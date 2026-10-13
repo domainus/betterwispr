@@ -41,9 +41,12 @@ final class DictationRecording {
     let target: NSRunningApplication?
     let mode: WritingMode?
     let context: Task<DictationContext, Never>?
+    /// The selection read when the Command Mode shortcut went down; nil for dictation.
+    let command: Task<CommandSelection, Never>?
 
     init(audio: RecordedAudio, model: SpeechModel, settings: AppSettings, vocabulary: [VocabularyEntry],
-         target: NSRunningApplication?, mode: WritingMode? = nil, context: Task<DictationContext, Never>? = nil) {
+         target: NSRunningApplication?, mode: WritingMode? = nil, context: Task<DictationContext, Never>? = nil,
+         command: Task<CommandSelection, Never>? = nil) {
         self.audio = audio
         self.model = model
         self.settings = settings
@@ -51,6 +54,7 @@ final class DictationRecording {
         self.target = target
         self.mode = mode
         self.context = context
+        self.command = command
     }
 
     deinit {
@@ -96,9 +100,14 @@ final class AppModel {
     var liveTranscript = LiveTranscript()
     var voiceLevels = VoiceLevels()
     var isHeldSession = false
+    /// The latest session's Command Mode selection; nil when that session is dictation.
+    private(set) var commandSelection: Task<CommandSelection, Never>?
     var recordingDuration: TimeInterval = 0
     var history: [Transcript] = []
     var vocabulary: [VocabularyEntry] = []
+    /// Lowercased spellings of learned entries the user removed; learning never adds them back.
+    private var declinedTerms: Set<String> = []
+    var snippets: [Snippet] = []
     var settings = AppSettings()
     var notesCLICatalogs: [NotesCLI: NotesCLICatalog] = [:]
     var notesCatalogErrors: [NotesCLI: String] = [:]
@@ -106,6 +115,7 @@ final class AppModel {
     var models: [SpeechModel] { SpeechModel.catalog + settings.speechConnections.map(\.speechModel) }
     @ObservationIgnored lazy var updater = AppUpdater()
     let meetings: MeetingModel
+    let s1Mini = S1MiniSetup()
     let meetingDetector: MeetingDetector
     var installation: ModelInstallation?
     var phraseBoosterInstalled = false
@@ -123,6 +133,8 @@ final class AppModel {
     @ObservationIgnored private let startsServices: Bool
     @ObservationIgnored private let correctionWatcher = CorrectionWatcher()
     @ObservationIgnored private let globalShortcut = GlobalShortcut()
+    @ObservationIgnored private let commandListener = GlobalShortcut()
+    @ObservationIgnored private var commandWarning: String?
     @ObservationIgnored private var microphoneObserver: AudioInputObserver?
     @ObservationIgnored private var shortcutWarning: String?
     @ObservationIgnored private var provider: (any SpeechProvider)?
@@ -134,11 +146,14 @@ final class AppModel {
     @ObservationIgnored private var ticker: Task<Void, Never>?
     @ObservationIgnored private var live: LiveTranscriber?
     @ObservationIgnored private var cardDismissal: Task<Void, Never>?
-    @ObservationIgnored private var shortcutPressedAt: Date?
+    @ObservationIgnored private var shortcutGesture = ShortcutGesture()
+    @ObservationIgnored private var commandGesture = ShortcutGesture()
     @ObservationIgnored private var generation = UUID()
     @ObservationIgnored private var targetApplication: NSRunningApplication?
     @ObservationIgnored private var writingMode: WritingMode?
     @ObservationIgnored private var dictationContext: Task<DictationContext, Never>?
+    @ObservationIgnored private var learnedBatch: [VocabularyEntry] = []
+    @ObservationIgnored private var learnedAnnouncement: Task<Void, Never>?
     @ObservationIgnored private var activeRecording: DictationRecording?
     @ObservationIgnored private var feedbackSound: NSSound?
     @ObservationIgnored private var storageIsReadable = true
@@ -170,6 +185,8 @@ final class AppModel {
             settings = state.settings
             history = state.history
             vocabulary = state.vocabulary
+            declinedTerms = Set(state.declinedTerms)
+            snippets = state.snippets
         } catch {
             storageIsReadable = false
             statusMessage = "Could not read your saved workspace. It has been left untouched: \(error.localizedDescription)"
@@ -193,6 +210,8 @@ final class AppModel {
         meetingDetector.isEnabled = settings.detectMeetings
         globalShortcut.onPress = { [weak self] in self?.shortcutPressed() }
         globalShortcut.onRelease = { [weak self] in self?.shortcutReleased() }
+        commandListener.onPress = { [weak self] in self?.commandShortcutPressed() }
+        commandListener.onRelease = { [weak self] in self?.commandShortcutReleased() }
         warmUpSelectedModel()
         let warmUpAfterWake: @Sendable (Notification) -> Void = { [weak self] _ in
             MainActor.assumeIsolated { self?.warmUpSelectedModel(after: .seconds(3)) }
@@ -202,22 +221,33 @@ final class AppModel {
     }
 
     func shortcutPressed() {
-        guard shortcutPressedAt == nil || !isBusy else { return }
-        guard settings.dictationMode == .hold, !isBusy else { toggleRecording(); return }
-        shortcutPressedAt = Date()
-        startRecording(held: true)
+        perform(shortcutGesture.press(at: ProcessInfo.processInfo.systemUptime, mode: settings.dictationMode, session: shortcutSession), shortcut: settings.shortcut)
     }
 
     func shortcutReleased() {
-        guard let pressedAt = shortcutPressedAt else { return }
-        shortcutPressedAt = nil
-        guard phase == .preparing || phase == .recording else { return }
-        if Date().timeIntervalSince(pressedAt) < 0.3 {
-            isHeldSession = false
-            if phase == .recording { statusMessage = "Listening. Press \(settings.shortcut.displayName) or click ✓ to finish." }
+        perform(shortcutGesture.release(at: ProcessInfo.processInfo.systemUptime, session: shortcutSession), shortcut: settings.shortcut)
+    }
+
+    private var shortcutSession: ShortcutGesture.Session {
+        switch phase {
+        case .preparing: .preparing
+        case .recording: .recording
+        case .transcribing: .transcribing
+        default: .idle
         }
-        else if phase == .preparing { abandon(.releasedEarly(settings.shortcut)) }
-        else { finishRecording() }
+    }
+
+    private func perform(_ action: ShortcutGesture.Action, shortcut: DictationShortcut) {
+        switch action {
+        case .startHeld: startRecording(held: true)
+        case .startHandsFree: startRecording(held: false)
+        case .lockHandsFree:
+            isHeldSession = false
+            if phase == .recording { statusMessage = "Listening. Press \(shortcut.displayName) or click ✓ to finish." }
+        case .finish: finishRecording()
+        case .abandonEarly: abandon(.releasedEarly(shortcut))
+        case .ignore: break
+        }
     }
 
     func registerShortcut() {
@@ -228,12 +258,133 @@ final class AppModel {
             statusMessage = "\(error.localizedDescription) Use the menu bar or Record button to dictate, or choose another shortcut in Settings."
             shortcutWarning = statusMessage
         }
+        registerCommandShortcut()
     }
 
-    func suspendShortcut() { globalShortcut.unregister() }
+    // MARK: Command Mode
+
+    var commandShortcut: DictationShortcut { settings.commandShortcut ?? .commandDefault }
+    var isCommand: Bool { commandSelection != nil }
+
+    func setCommandMode(_ on: Bool) {
+        settings.commandMode = on
+        saveSettings()
+        registerCommandShortcut()
+    }
+
+    func changeCommandShortcut(_ shortcut: DictationShortcut) {
+        guard !isBusy else { return }
+        guard shortcut != settings.shortcut else { return rejectDuplicate(shortcut) }
+        do {
+            try commandListener.register(shortcut)
+        } catch {
+            registerCommandShortcut()
+            ToastWindow.shared.show(Toast(failure: "Couldn’t use \(shortcut.displayName)", error))
+            return
+        }
+        if statusMessage == commandWarning { statusMessage = "" }
+        settings.commandShortcut = shortcut == .commandDefault ? nil : shortcut
+        saveSettings()
+    }
+
+    private func rejectDuplicate(_ shortcut: DictationShortcut) {
+        ToastWindow.shared.show(Toast(title: "Couldn’t use \(shortcut.displayName)", message: "Dictation and Command Mode need different shortcuts.",
+                                      systemImage: "exclamationmark.triangle.fill", isError: true))
+    }
+
+    private func registerCommandShortcut() {
+        commandListener.unregister()
+        if statusMessage == commandWarning { statusMessage = "" }
+        guard settings.commandMode else { return }
+        let problem: String?
+        if commandShortcut == settings.shortcut {
+            problem = "\(commandShortcut.displayName) also starts dictation."
+        } else {
+            do { try commandListener.register(commandShortcut); problem = nil } catch { problem = error.localizedDescription }
+        }
+        guard let problem else { return }
+        statusMessage = "Command Mode is off. \(problem) Choose another command shortcut in Settings."
+        commandWarning = statusMessage
+    }
+
+    /// Starts recording an instruction for the frontmost app's selection, following the dictation Behavior setting.
+    func commandShortcutPressed() {
+        guard settings.commandMode else { return }
+        let action = commandGesture.press(at: ProcessInfo.processInfo.systemUptime, mode: settings.dictationMode, session: commandSession)
+        guard action == .startHeld || action == .startHandsFree else { return perform(action, shortcut: commandShortcut) }
+        if case .unavailable(let message) = MeetingNotesGenerator.availability(settings: settings) {
+            commandGesture.reset()
+            selectedPage = .models
+            return fail(DictationFailure(title: "Choose a notes model for Command Mode.", message: message))
+        }
+        guard let target = NSWorkspace.shared.frontmostApplication else { commandGesture.reset(); return }
+        startRecording(held: action == .startHeld, command: CommandSelection.read(from: target))
+        guard isBusy else { commandGesture.reset(); return }
+        let settings = settings
+        Task { await MeetingNotesGenerator.warmUp(settings: settings) }
+    }
+
+    func commandShortcutReleased() {
+        perform(commandGesture.release(at: ProcessInfo.processInfo.systemUptime, session: commandSession), shortcut: commandShortcut)
+    }
+
+    /// The command shortcut controls only commands, so a dictation in progress looks busy to it.
+    private var commandSession: ShortcutGesture.Session {
+        isBusy && !isCommand ? .transcribing : shortcutSession
+    }
+
+    /// Applies the spoken instruction to the selection, or writes new text, and pastes only where the command started.
+    /// Commands skip History and correction learning: the pasted text is the notes model's writing, not the user's
+    /// words, so neither it nor a later edit of it says anything about what the speech model heard.
+    private func runCommand(_ command: Task<CommandSelection, Never>, instruction: String,
+                            recording: DictationRecording, token: UUID) async {
+        let settings = recording.settings
+        guard !instruction.isEmpty else { return fail(.noSpeech) }
+        let selection = await command.value
+        guard generation == token else { return }
+        guard selection != .secure else {
+            return fail(DictationFailure(title: "Command Mode is off in password fields.", message: "BetterWispr doesn’t read or change secure text."))
+        }
+        statusMessage = "Editing with \(settings.notesModelName)…"
+        do {
+            let text = try await CommandRewriter.rewrite(instruction: instruction, selection: selection.text, settings: settings)
+            try Task.checkCancellation()
+            guard generation == token else { return }
+            // Paste only over the selection the instruction was about; an unreadable field might hide one.
+            var pastes = settings.autoPaste && selection != .unreadable
+            if pastes, selection.text != nil, let target = recording.target {
+                pastes = await CommandSelection.read(from: target).value == selection
+                guard generation == token else { return }
+            }
+            activeRecording = nil
+            let integration: any TextOutputIntegration = pastes ? FocusedAppIntegration(keepsCopy: settings.copyToClipboard) : ClipboardIntegration()
+            let result = try await integration.deliver(text, to: recording.target)
+            guard generation == token else { return }
+            statusMessage = ""
+            switch result {
+            case .pasted: phase = .idle
+            case .copied where !settings.autoPaste: present(.completed("Copied to clipboard"), for: 1.6)
+            case _ where !AXIsProcessTrusted(): fail(.pasteBlocked)
+            case .copied, .copiedForManualPaste:
+                present(.unpasted(text), for: Self.unpastedCardSeconds)
+                playFeedback(.attention)
+            }
+        } catch {
+            guard generation == token else { return }
+            fail(DictationFailure(title: "Couldn’t run the command.", message: error.localizedDescription))
+        }
+    }
+
+    // MARK: -
+
+    func suspendShortcut() {
+        globalShortcut.unregister()
+        commandListener.unregister()
+    }
 
     func changeShortcut(_ shortcut: DictationShortcut) {
         guard !isBusy else { return }
+        guard !settings.commandMode || shortcut != commandShortcut else { return rejectDuplicate(shortcut) }
         do {
             try globalShortcut.register(shortcut)
         } catch {
@@ -251,9 +402,10 @@ final class AppModel {
         startRecording(held: false)
     }
 
-    private func startRecording(held: Bool) {
+    private func startRecording(held: Bool, command: Task<CommandSelection, Never>? = nil) {
         guard !isBusy else { return }
         cancelledRecording = nil
+        commandSelection = command
         feedbackSound?.stop()
         correctionWatcher.stop()
         guard isModelInstalled(selectedModel) else {
@@ -262,11 +414,11 @@ final class AppModel {
             return
         }
         targetApplication = NSWorkspace.shared.frontmostApplication
-        let modes = settings.modes
+        let modes = command == nil ? settings.modes : []
         let website = modes.needsWebsite ? targetApplication.flatMap(WebsiteReader.read) : nil
         writingMode = modes.match(app: targetApplication?.bundleIdentifier)?.mode
         dictationContext?.cancel()
-        dictationContext = website == nil ? captureContext(for: settings.applying(writingMode)) : nil
+        dictationContext = website == nil && command == nil ? captureContext(for: settings.applying(writingMode)) : nil
         isHeldSession = held
         let token = UUID()
         generation = token
@@ -309,7 +461,7 @@ final class AppModel {
                 }
                 self.microphoneGranted = true
                 self.phase = .recording
-                let shortcut = self.settings.shortcut.displayName
+                let shortcut = (command == nil ? self.settings.shortcut : self.commandShortcut).displayName
                 self.statusMessage = self.isHeldSession ? "Listening. Release \(shortcut) to finish." : "Listening. Press \(shortcut) or click ✓ to finish."
                 self.warmUpSelectedModel()
                 self.warmUpNotesModel(token: token)
@@ -364,6 +516,7 @@ final class AppModel {
         let target = targetApplication
         let mode = writingMode
         let context = dictationContext.take()
+        let command = commandSelection
         let live = live
         phase = .transcribing
         statusMessage = "Finishing recording…"
@@ -385,7 +538,7 @@ final class AppModel {
                 }
                 self.playFeedback(.finished)
                 self.transcribe(DictationRecording(audio: audio, model: model, settings: settings,
-                                                  vocabulary: entries, target: target, mode: mode, context: context))
+                                                  vocabulary: entries, target: target, mode: mode, context: context, command: command))
             } catch {
                 guard self.generation == token else { return }
                 self.recorder.cancel()
@@ -417,11 +570,22 @@ final class AppModel {
                 try Task.checkCancellation()
                 guard self.generation == token, let provider = self.provider else { return }
                 let recognitionStarted = ContinuousClock.now
-                let raw = try await provider.transcribe(audioURL: audio.url, language: language, vocabulary: VocabularyProcessor.hints(entries))
+                let windowHints = recording.settings.useWindowSpelling && WindowTerms.helps(model.engine)
+                    ? WindowTerms.hints(from: await context?.value(within: .seconds(1)) ?? nil, vocabulary: entries) : []
+                try Task.checkCancellation()
+                guard self.generation == token else { return }
+                let raw = try await provider.transcribe(audioURL: audio.url, language: language, vocabulary: VocabularyProcessor.hints(entries) + windowHints)
+                // Other engines take no hints, but their dictations still teach the names they spell from the window.
+                let windowNames = recording.settings.useWindowSpelling && !WindowTerms.helps(model.engine)
+                    ? WindowTerms.hints(from: await context?.value(within: .seconds(1)) ?? nil, vocabulary: entries) : windowHints
                 Logger(subsystem: "org.betterwispr.app", category: "DictationTiming").notice("Recognition completed: elapsed=\(String(describing: recognitionStarted.duration(to: .now)), privacy: .public) empty=\(raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)")
                 try Task.checkCancellation()
                 guard self.generation == token else { return }
                 let lightlyCleaned = TranscriptCleaner.clean(raw, language: language)
+                if let command = recording.command {
+                    return await self.runCommand(command, instruction: VocabularyProcessor.corrected(entries, in: lightlyCleaned).text,
+                                                 recording: recording, token: token)
+                }
                 let trigger = recording.settings.modes.match(transcript: lightlyCleaned)
                 let mode = trigger?.mode ?? recording.mode
                 let writingSettings = recording.settings.applying(mode)
@@ -436,6 +600,12 @@ final class AppModel {
                 let english = TranscriptCleaner.isEnglish(spoken, language: language)
                 if english, let email = EmailDictation.compose(spoken) {
                     spoken = email
+                } else if english, cleanup == .medium, writingSettings.cleanupModel == .s1Mini {
+                    self.statusMessage = "Editing with S1-mini…"
+                    let normalized = await S1MiniCleaner.clean(spoken, email: AppCategory(bundleID: appBundleID).style == .email)
+                    try Task.checkCancellation()
+                    guard self.generation == token else { return }
+                    spoken = StyleFormatter.apply(tone, to: normalized ?? spoken)
                 } else if english, cleanup == .medium, MeetingNotesGenerator.availability(settings: writingSettings) == .available {
                     self.statusMessage = "Editing with \(writingSettings.notesModelName)…"
                     let polished = await TranscriptPolisher.polish(spoken, settings: writingSettings, vocabulary: VocabularyProcessor.hints(entries),
@@ -447,7 +617,8 @@ final class AppModel {
                 } else if english {
                     spoken = StyleFormatter.apply(tone, to: spoken)
                 }
-                let (text, fixes) = VocabularyProcessor.corrected(entries, in: spoken)
+                let (corrected, fixes) = VocabularyProcessor.corrected(entries, in: spoken)
+                let (text, expandedSnippet) = SnippetExpander.expand(self.snippets, in: corrected)
                 guard !text.isEmpty else { self.fail(.noSpeech); return }
                 self.partialTranscript = text
                 let transcript = Transcript(text: text, rawText: raw, duration: audio.duration,
@@ -474,7 +645,8 @@ final class AppModel {
                     switch result {
                     case .pasted:
                         self.phase = .idle
-                        if writingSettings.learnCorrections, let app = recording.target {
+                        // Edits to a snippet's text are not recognition errors, so a dictation that expanded one learns no fixes.
+                        if writingSettings.learnCorrections, !expandedSnippet, let app = recording.target {
                             self.correctionWatcher.watch(text, in: app) { [weak self] in self?.learn(from: $0, to: $1) }
                         }
                     case .copied: self.present(.completed("Copied to clipboard"), for: 1.6)
@@ -482,6 +654,7 @@ final class AppModel {
                     case .copiedForManualPaste: break
                     }
                 }
+                if writingSettings.learnCorrections { self.learnNames(windowNames, in: text) }
                 if let persistenceWarning { self.statusMessage = "History could not be saved: \(persistenceWarning)" }
             } catch {
                 guard self.generation == token else { return }
@@ -495,7 +668,7 @@ final class AppModel {
         let recoverable: DictationRecording?
         if phase == .recording, let audio = try? recorder.stop() {
             let recording = DictationRecording(audio: audio, model: selectedModel, settings: settings, vocabulary: vocabulary,
-                                              target: targetApplication, mode: writingMode, context: dictationContext.take())
+                                              target: targetApplication, mode: writingMode, context: dictationContext.take(), command: commandSelection)
             recoverable = audio.hasSpeech ? recording : nil
         } else {
             recoverable = activeRecording
@@ -517,7 +690,8 @@ final class AppModel {
     /// Immediate cleanup for failures and quitting; only user cancellation offers Undo.
     func discardRecording() {
         generation = UUID()
-        shortcutPressedAt = nil
+        shortcutGesture.reset()
+        commandGesture.reset()
         correctionWatcher.stop()
         dictationContext.take()?.cancel()
         operation?.cancel()
@@ -601,16 +775,21 @@ final class AppModel {
             try? await Task.sleep(for: .milliseconds(450))
             guard let self, self.generation == token, self.phase == .recording else { return }
             let settings = self.settings.applying(self.writingMode)
-            guard settings.cleanup == .medium, settings.language == "auto" || settings.language.hasPrefix("en"),
-                  MeetingNotesGenerator.availability(settings: settings) == .available else { return }
+            guard settings.cleanup == .medium, settings.language == "auto" || settings.language.hasPrefix("en") else { return }
+            if settings.cleanupModel == .s1Mini { return await S1MiniCleaner.warmUp() }
+            guard MeetingNotesGenerator.availability(settings: settings) == .available else { return }
             await MeetingNotesGenerator.warmUp(settings: settings)
         }
     }
 
-    /// Starts reading screen context when these settings send it to an available notes model during Medium cleanup.
+    /// Starts reading screen context when these settings send it to an available notes model during Medium cleanup,
+    /// or only the window and selection for spelling hints and learning the names the user dictates.
     private func captureContext(for settings: AppSettings) -> Task<DictationContext, Never>? {
-        guard settings.useScreenContext, settings.cleanup == .medium, MeetingNotesGenerator.availability(settings: settings) == .available else { return nil }
-        return targetApplication.map { DictationContext.capture(from: $0, recognizingScreen: settings.recognizeScreenText) }
+        let polishes = settings.useScreenContext && settings.cleanup == .medium && settings.cleanupModel == .notesModel
+            && MeetingNotesGenerator.availability(settings: settings) == .available
+        let readsWindow = settings.useWindowSpelling && (WindowTerms.helps(selectedModel.engine) || settings.learnCorrections)
+        guard polishes || readsWindow else { return nil }
+        return targetApplication.map { DictationContext.capture(from: $0, readingClipboard: polishes, recognizingScreen: polishes && settings.recognizeScreenText) }
     }
 
     private func observe(_ provider: any SpeechProvider, token: UUID) {
@@ -622,7 +801,7 @@ final class AppModel {
 
     /// Downloads a local model beside dictation, then switches to it unless the user chose another model meanwhile.
     func installModel(_ model: SpeechModel) {
-        guard !isInstalling, model.engine == .parakeet || model.engine == .whisperKit else { return }
+        guard !isInstalling, model.engine.installsModels else { return }
         let installer = model.makeProvider()
         let selection = settings.selectedModelID
         install(id: model.id, name: model.name) { report in
@@ -794,7 +973,7 @@ final class AppModel {
     }
 
     private func refreshModels() {
-        installedModelIDs = Set(models.filter { WhisperKitProvider.isInstalled($0) || ParakeetProvider.isInstalled($0) }.map(\.id))
+        installedModelIDs = Set(models.filter(\.isInstalledLocally).map(\.id))
         phraseBoosterInstalled = ParakeetProvider.isPhraseBoosterInstalled()
         speakerDetectionInstalled = SpeakerDetection.isInstalled()
         modelRevision += 1
@@ -850,7 +1029,9 @@ final class AppModel {
     }
 
     private func learn(from original: String, to edited: String) {
-        let candidates = CorrectionLearner.corrections(from: original, to: edited)
+        let reverted = CorrectionLearner.reverted(vocabulary, from: original, to: edited)
+        forget(reverted)
+        let candidates = CorrectionLearner.corrections(from: original, to: edited).filter { change in !reverted.contains(where: change.undoes) }
         guard !candidates.isEmpty else { return }
         let settings = settings
         Task { [weak self] in
@@ -861,27 +1042,70 @@ final class AppModel {
 
     private func learn(_ decisions: [CorrectionDecision]) {
         guard settings.learnCorrections else { return }
-        let added = CorrectionDecision.entries(for: decisions, in: vocabulary)
+        let added = CorrectionDecision.entries(for: decisions, in: vocabulary, declined: declinedTerms)
         guard !added.isEmpty else { return }
         let previous = vocabulary
         vocabulary += added
         do {
             try persist()
-            let ids = Set(added.map(\.id))
-            ToastWindow.shared.show(Toast(title: "Learned \(added.map { "“\($0.replacement.isEmpty ? $0.phrase : $0.replacement)”" }.joined(separator: ", "))",
-                                          message: "BetterWispr will spell it this way next time. Manage it in Vocabulary.",
-                                          systemImage: "sparkles",
-                                          action: Toast.Action(title: "Undo") { [weak self] in
-                                              guard let self else { return }
-                                              let learned = vocabulary
-                                              vocabulary.removeAll { ids.contains($0.id) }
-                                              do { try persist() } catch {
-                                                  vocabulary = learned
-                                                  ToastWindow.shared.show(Toast(failure: "Couldn’t undo", error))
-                                              }
-                                          }))
+            announceLearned(added)
         } catch {
             vocabulary = previous
+        }
+    }
+
+    /// Collects words learned within a few seconds, from names and from reviewed fixes, into one toast, as Wispr Flow batches its notice.
+    private func announceLearned(_ added: [VocabularyEntry]) {
+        learnedBatch += added
+        learnedAnnouncement?.cancel()
+        learnedAnnouncement = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(3))
+            guard !Task.isCancelled, let self else { return }
+            let batch = learnedBatch
+            learnedBatch = []
+            ToastWindow.shared.show(Toast(title: "Learned \(batch.map { "“\($0.spelling)”" }.joined(separator: ", "))",
+                                          message: "BetterWispr will spell \(batch.count == 1 ? "it" : "them") this way next time. Manage words in Vocabulary.",
+                                          systemImage: "sparkles",
+                                          action: Toast.Action(title: "Undo") { [weak self] in self?.remove(batch) }))
+        }
+    }
+
+    /// Learns the window's names that this dictation spelled, as Wispr Flow learns the names you use.
+    private func learnNames(_ windowHints: [String], in text: String) {
+        learn(WindowTerms.used(windowHints, in: text).map { .vocabularyOnly($0) })
+    }
+
+    /// Drops learned replacements the user changed back, so a wrong one stops recurring without a trip to Vocabulary.
+    private func forget(_ entries: [VocabularyEntry]) {
+        guard !entries.isEmpty, remove(entries, failure: nil) else { return }
+        ToastWindow.shared.show(Toast(title: "Stopped replacing \(entries.map { "“\($0.phrase)”" }.joined(separator: ", "))",
+                                      message: "You changed it back, so BetterWispr removed what it learned from Vocabulary.",
+                                      systemImage: "arrow.uturn.backward",
+                                      action: Toast.Action(title: "Undo") { [weak self] in self?.restore(entries) }))
+    }
+
+    /// Removes entries and declines the learned ones, so learning never adds them back; false when saving failed.
+    @discardableResult
+    private func remove(_ entries: [VocabularyEntry], failure: String? = "Couldn’t undo") -> Bool {
+        let previous = (vocabulary, declinedTerms)
+        let ids = Set(entries.map(\.id))
+        vocabulary.removeAll { ids.contains($0.id) }
+        declinedTerms.formUnion(entries.filter(\.learned).map { $0.spelling.lowercased() })
+        do { try persist() } catch {
+            (vocabulary, declinedTerms) = previous
+            if let failure { ToastWindow.shared.show(Toast(failure: failure, error)) }
+            return false
+        }
+        return true
+    }
+
+    private func restore(_ entries: [VocabularyEntry]) {
+        let previous = (vocabulary, declinedTerms)
+        vocabulary += entries.filter { entry in !vocabulary.contains { $0.phrase.caseInsensitiveCompare(entry.phrase) == .orderedSame } }
+        declinedTerms.subtract(entries.map { $0.spelling.lowercased() })
+        do { try persist() } catch {
+            (vocabulary, declinedTerms) = previous
+            ToastWindow.shared.show(Toast(failure: "Couldn’t undo", error))
         }
     }
 
@@ -895,19 +1119,52 @@ final class AppModel {
         guard !vocabulary.contains(where: { $0.phrase.caseInsensitiveCompare(phrase) == .orderedSame }) else {
             statusMessage = "That phrase is already in your vocabulary."; return
         }
-        vocabulary.append(VocabularyEntry(phrase: phrase, replacement: replacement))
+        let entry = VocabularyEntry(phrase: phrase, replacement: replacement)
+        vocabulary.append(entry)
+        declinedTerms.remove(entry.spelling.lowercased())
         saveSettings()
     }
 
     func deleteVocabulary(_ entry: VocabularyEntry) {
-        let previous = vocabulary
-        vocabulary.removeAll { $0.id == entry.id }
+        guard remove([entry], failure: "Couldn’t delete word") else { return }
+        ToastWindow.shared.show(Toast(title: "Deleted", message: "“\(entry.phrase)” was removed from your vocabulary.", systemImage: "trash"))
+    }
+
+    /// Adds a snippet, or edits `existing`; false when the cue or text was rejected or could not be saved.
+    @discardableResult
+    func saveSnippet(_ existing: Snippet? = nil, cue: String, text: String) -> Bool {
+        let cue = cue.trimmingCharacters(in: .whitespacesAndNewlines)
+        let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard existing != nil || snippets.count < Snippet.countLimit else {
+            statusMessage = "You can save up to \(Snippet.countLimit) snippets."; return false
+        }
+        if let problem = Snippet.problem(cue: cue, text: text, among: snippets.filter { $0.id != existing?.id }) {
+            statusMessage = problem; return false
+        }
+        let previous = snippets
+        if let existing, let index = snippets.firstIndex(where: { $0.id == existing.id }) {
+            snippets[index].cue = cue
+            snippets[index].text = text
+        } else {
+            snippets.append(Snippet(cue: cue, text: text))
+        }
+        do { try persist() } catch {
+            snippets = previous
+            statusMessage = "Could not save the snippet: \(error.localizedDescription)"
+            return false
+        }
+        return true
+    }
+
+    func deleteSnippet(_ snippet: Snippet) {
+        let previous = snippets
+        snippets.removeAll { $0.id == snippet.id }
         do {
             try persist()
-            ToastWindow.shared.show(Toast(title: "Deleted", message: "“\(entry.phrase)” was removed from your vocabulary.", systemImage: "trash"))
+            ToastWindow.shared.show(Toast(title: "Deleted", message: "“\(snippet.cue)” was removed from your snippets.", systemImage: "trash"))
         } catch {
-            vocabulary = previous
-            ToastWindow.shared.show(Toast(failure: "Couldn’t delete word", error))
+            snippets = previous
+            ToastWindow.shared.show(Toast(failure: "Couldn’t delete snippet", error))
         }
     }
 
@@ -981,6 +1238,8 @@ final class AppModel {
         state.settings = settings
         state.history = history
         state.vocabulary = vocabulary
+        state.declinedTerms = declinedTerms.sorted()
+        state.snippets = snippets
         try store.save(state)
     }
 
@@ -1016,7 +1275,8 @@ final class AppModel {
         microphoneGranted = AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
         let previouslyGranted = accessibilityGranted
         accessibilityGranted = AXIsProcessTrusted()
-        if previouslyGranted != accessibilityGranted, settings.shortcut.isModifierOnly, !isBusy { registerShortcut() }
+        let modifierOnly = settings.shortcut.isModifierOnly || settings.commandMode && commandShortcut.isModifierOnly
+        if previouslyGranted != accessibilityGranted, modifierOnly, !isBusy { registerShortcut() }
     }
 
     func selectMicrophone(_ choice: AudioInputDevice?) {

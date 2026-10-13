@@ -38,6 +38,9 @@ struct CapsuleView: View {
             Spacer(minLength: 0)
             if !showsCard, let target = hover.target {
                 tooltip(for: target)
+            } else if model.isBusy, model.isCommand {
+                // Keep a command visibly distinct from dictation without hovering.
+                tooltip(for: .dictation)
             }
             if model.isBusy, !model.liveTranscript.isEmpty {
                 livePreview
@@ -156,6 +159,9 @@ struct CapsuleView: View {
         case .meetingNotes: "Open meeting notes"
         case .dictation:
             switch model.phase {
+            case .recording where model.isCommand:
+                model.isHeldSession ? "Command: release \(model.commandShortcut.displayName) to run" : "Command: click ✓ to run"
+            case .transcribing where model.isCommand: model.statusMessage
             case .recording: model.isHeldSession ? "Release \(model.settings.shortcut.displayName) to finish" : "Finish dictation"
             case .transcribing: "Transcribing…"
             default: "Starting microphone…"

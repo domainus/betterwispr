@@ -23,13 +23,14 @@ public enum CorrectionDecision: Equatable, Sendable {
         }
     }
 
-    /// The entries these decisions add to a vocabulary, skipping terms it already has and stopping at 200 entries.
-    public static func entries(for decisions: [CorrectionDecision], in vocabulary: [VocabularyEntry]) -> [VocabularyEntry] {
-        var known = Set(vocabulary.flatMap { [$0.phrase.lowercased(), $0.replacement.lowercased()] })
+    /// The entries these decisions add to a vocabulary, skipping terms it already has or the user declined and very common
+    /// first names, and stopping at 200 entries.
+    public static func entries(for decisions: [CorrectionDecision], in vocabulary: [VocabularyEntry], declined: Set<String> = []) -> [VocabularyEntry] {
+        var known = Set(vocabulary.flatMap { [$0.phrase.lowercased(), $0.replacement.lowercased()] }).union(declined)
         var added: [VocabularyEntry] = []
         for entry in decisions.compactMap({ $0.entry() }) {
             let terms = Set([entry.phrase, entry.replacement].filter { !$0.isEmpty }.map { $0.lowercased() })
-            guard vocabulary.count + added.count < 200, known.isDisjoint(with: terms) else { continue }
+            guard vocabulary.count + added.count < 200, known.isDisjoint(with: terms), !CommonNames.contains(entry.spelling) else { continue }
             added.append(entry)
             known.formUnion(terms)
         }
@@ -102,7 +103,7 @@ public enum CorrectionReviewer {
 
     /// Whether an edit may go to the notes model: English text, Medium cleanup and a ready notes model, as for polishing.
     public static func mayReview(_ edited: String, settings: AppSettings) -> Bool {
-        settings.cleanup == .medium && MeetingNotesGenerator.availability(settings: settings) == .available
+        settings.cleanup == .medium && settings.cleanupModel == .notesModel && MeetingNotesGenerator.availability(settings: settings) == .available
             && TranscriptCleaner.isEnglish(edited, language: settings.language == "auto" ? nil : settings.language)
     }
 

@@ -11,6 +11,7 @@ public final class WhisperKitProvider: SpeechProvider {
     private let modelsDirectory: URL
     private var runtime: WhisperKit?
     private var loadedModelID: String?
+    private var englishOnly = false
     private var preparing = false
     private var transcriptionTask: Task<String, any Error>?
     private var transcriptionID: UUID?
@@ -79,17 +80,20 @@ public final class WhisperKitProvider: SpeechProvider {
             verbose: false, prewarm: false, load: false, download: false
         ))
         pipeline.tokenizer = localTokenizer
-        // All catalog models are multilingual. Injecting a tokenizer skips WhisperKit's
-        // metadata detection; this flag must still be set for language detection.
-        pipeline.textDecoder.isModelMultilingual = true
+        // Injecting a tokenizer skips WhisperKit's metadata detection; this flag must
+        // still be set for language detection. Only ".en" builds have no language tokens.
+        pipeline.textDecoder.isModelMultilingual = Self.vocabularySize(forTokenizer: tokenizerName) != Self.englishVocabularySize
         try await pipeline.loadModels()
         try Task.checkCancellation()
+        // A tokenizer from another Whisper family would decode the wrong tokens.
+        guard pipeline.textDecoder.logitsSize == Self.vocabularySize(forTokenizer: tokenizerName) else { throw SpeechError.invalidModel }
         // A partial download must remain installable instead of appearing ready in the dashboard.
         if download {
             try Data(model.modelName.utf8).write(to: modelFolder.appending(path: ".betterwispr-installed"), options: .atomic)
         }
         runtime = pipeline
         loadedModelID = model.id
+        englishOnly = model.languages == ["en"]
         onProgress?(1)
     }
 
@@ -100,7 +104,8 @@ public final class WhisperKitProvider: SpeechProvider {
         try Task.checkCancellation()
         let prompt = vocabulary.filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }.prefix(64).map { String($0.prefix(100)) }.joined(separator: ", ")
         let promptTokens = prompt.isEmpty ? nil : runtime.tokenizer.map { Array($0.encode(text: " " + prompt).prefix(160)) }
-        let languageCode = language.flatMap { Locale(identifier: $0).language.languageCode?.identifier }
+        // English-only models skip language detection, which could pick a language they can't write.
+        let languageCode = language.flatMap { Locale(identifier: $0).language.languageCode?.identifier } ?? (englishOnly ? "en" : nil)
         let options = DecodingOptions(
             language: languageCode, temperature: 0, temperatureFallbackCount: 2,
             detectLanguage: languageCode == nil, skipSpecialTokens: true, withoutTimestamps: true,
@@ -110,7 +115,7 @@ public final class WhisperKitProvider: SpeechProvider {
         )
         let id = UUID()
         transcriptionID = id
-        let task = Task {
+        let task = Task { [weak self] in
             let samples = try AudioProcessor.loadAudioAsFloatArray(fromPath: audioURL.path)
             try Task.checkCancellation()
             // Whisper can invent words for digital silence even with its no-speech filter.
@@ -139,5 +144,13 @@ public final class WhisperKitProvider: SpeechProvider {
 
     nonisolated static func containsSignal(in samples: [Float]) -> Bool {
         samples.contains { $0.isFinite && abs($0) > 0.00001 }
+    }
+
+    nonisolated static let englishVocabularySize = 51864
+
+    /// The decoder's output size for a tokenizer, as WhisperKit's `detectVariant` reads it:
+    /// 51864 for English-only builds, 51866 for large-v3 and 51865 for the other multilingual sizes.
+    nonisolated static func vocabularySize(forTokenizer name: String) -> Int {
+        name.hasSuffix(".en") ? englishVocabularySize : name.hasSuffix("large-v3") ? 51866 : 51865
     }
 }

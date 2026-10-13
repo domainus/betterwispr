@@ -14,6 +14,8 @@ func meetingAndDictationModelsCreateTheMatchingSessionProvider(_ model: SpeechMo
     case .apple: #expect(meeting is AppleSpeechProvider)
     case .whisperKit: #expect(meeting is WhisperKitProvider)
     case .parakeet: #expect(meeting is ParakeetProvider)
+    case .cohere: #expect(meeting is CohereProvider)
+    case .canary: #expect(meeting is CanaryProvider)
     case .api: #expect(meeting is APISpeechProvider)
     }
 }

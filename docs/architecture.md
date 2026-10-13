@@ -41,6 +41,14 @@ the policy immediately and persist through the existing workspace store.
 1. A dashboard action or the global shortcut (**Option–Space** unless changed in
    Settings) starts a session. Capture the previously focused external app before
    showing the nonactivating capsule.
+   `ShortcutGesture` in Core turns shortcut presses and releases into actions.
+   In hold mode, holding talks and releasing finishes. A tap shorter than 0.3 s
+   keeps recording hands-free, and the next press finishes. A press within
+   0.35 s of that tap's release is the second half of a double-tap: it and its
+   release are ignored, so recording continues. Toggle mode ignores that second
+   press too. A modifier key alone, including Fn (Globe), is heard through
+   `flagsChanged` monitors and needs Accessibility. Other shortcuts use a Carbon
+   hotkey. The monitors are passive, so macOS still runs its own Fn action.
 2. Validate the selected provider and check microphone permission. Apple speech
    authorization and API-key checks still precede capture. Installed neural-model
    warm-up runs independently, so it need not delay capture; readiness is checked
@@ -51,6 +59,16 @@ the policy immediately and persist through the existing workspace store.
 4. Pass the recording URL, selected language and vocabulary hints to the provider.
    Entries written as a voice command ("question mark", "at the rate") are not
    hints, because boosting command words drops neighbouring words.
+   With "Spell names from the window" (on by default) and a Parakeet or Apple
+   model, the window text and selection are read through Accessibility while the
+   microphone records, without the clipboard. `WindowTerms` adds up to 20 words
+   with inner capitals ("PostHog") or capitalized words that are not ordinary
+   lowercase words ("Kartik") after the vocabulary hints, for this dictation
+   only. They are never saved or sent. Whisper gets none, because keyword prompts
+   raised average WER in published tests (see accuracy.md). When a window
+   exposes under 200 characters, capture sets `AXManualAccessibility` and reads
+   again after half a second, so Electron chat apps such as Slack show their
+   messages.
    Provider partial callbacks are provisional text during recognition, not audio
    streaming while capture is still running. The Parakeet live preview is the
    one exception: `LiveTranscriber` re-recognizes the unconfirmed tail of the
@@ -69,6 +87,17 @@ the policy immediately and persist through the existing workspace store.
    rejected when it answers the dictation, adds new words or changes length too
    much; any failure keeps the Light text, and Medium never picks a different
    model than the one selected.
+   `AppSettings.cleanupModel` (default `.notesModel`; older workspaces decode
+   with it) can instead pick S1-mini by Superwhisper, a local transcript
+   normalizer. `S1MiniCleaner` sends only the transcript to the user's Ollama
+   server, as a raw prompt in the model card's format with a control line
+   (`Context: email` for Email apps) and greedy decoding. It gets no
+   vocabulary, screen context or mode instructions, and screen context is not
+   captured for it; the reply passes the same `TranscriptPolisher.accepted`
+   check. Ollama not running, the model not installed, a timeout, an empty
+   reply or a rejected edit keeps the Light text; it never falls back to the
+   notes model. The model downloads only from the Download button in Style
+   (`Ollama.pull`). See `s1-mini.md`.
    Next apply the writing tone chosen for the destination app's style context
    (`AppCategory` maps bundle IDs; browsers count as Other). A `WritingMode`
    can override cleanup, tone, screen context and Medium instructions. A spoken
@@ -80,9 +109,25 @@ the policy immediately and persist through the existing workspace store.
    context is captured for the mode chosen at the start, so a trigger word can
    turn it off but not on. A saved mode with an unknown cleanup or tone makes the
    workspace unreadable and leaves the file untouched.
-   Vocabulary runs last so it can restore names a tone lowercased.
+   Vocabulary runs after the tone so it can restore names a tone lowercased.
+   `SnippetExpander` runs last and replaces each spoken snippet cue with its
+   saved text, so no earlier step rewrites that text. `rawText` keeps the
+   recognized words. A dictation that expanded a snippet does not start
+   `CorrectionWatcher`. Meetings do not expand snippets.
    Keep both raw and final text, plus the destination bundle ID and vocabulary
    fix count for Insights; save a transcript only when history is enabled.
+   After a paste, `CorrectionWatcher` reads the field for up to two minutes, and
+   History edits are compared the same way. `CorrectionLearner` learns one- to
+   three-word fixes. A fix that changes a learned replacement back to what was
+   heard removes that entry instead of learning the reverse. Window terms that
+   the final text spells exactly are learned as spelling hints. With learning on,
+   the window is read for every engine, so Whisper and API dictations learn
+   names too, although only Parakeet and Apple receive them as hints. Very
+   common first names (`CommonNames`) are never learned. Words learned within
+   3 seconds of each other share one "Learned" toast, whose Undo removes them all. Removing,
+   undoing or changing back a learned entry records its spelling in
+   `SavedState.declinedTerms` (old workspaces decode with none), and learning
+   skips those spellings until the user adds one by hand.
 6. Deliver through clipboard/guarded paste when enabled. Only paste if the
    original destination is still suitable; never treat a changed focus as consent
    to paste elsewhere. With "Copy to clipboard" on, leave the transcript on the
@@ -95,6 +140,48 @@ Audio callbacks must not mutate view state unsafely. Cancelled operations must
 not publish stale text or paste a result from a prior session. Keep these
 invariants when changing the implementation; the manual checklist covers OS
 behavior that unit tests cannot establish.
+
+## Command Mode
+
+Command Mode edits the selection in another app by voice. It is off by default.
+`AppSettings.commandMode` turns it on. `AppSettings.commandShortcut` holds its
+shortcut; nil uses `DictationShortcut.commandDefault`, **Option–Shift–Space**,
+so the default can change later without a migration. Settings refuses a command
+shortcut equal to the dictation shortcut. `AppModel` owns a second
+`GlobalShortcut`. Each instance registers its Carbon hot key with its own ID,
+and its handler passes other IDs on to the next handler.
+
+1. Pressing the shortcut first checks that the notes model chosen in Models is
+   available. Then it captures the frontmost app, as dictation does.
+   `CommandSelection.read` reads `kAXSelectedTextAttribute` of the focused
+   element through Accessibility, never the clipboard. It reads nothing while
+   secure event input is on or a password field is focused.
+2. Recording uses the dictation recorder, capsule, speech provider, vocabulary
+   hints, Behavior setting, cancellation and `generation` guards. Writing modes,
+   websites and screen context are not used. `DictationRecording.command`
+   carries the selection, so cancel and Undo keep the session a command.
+3. After recognition, `transcribe` applies Light cleanup and vocabulary
+   replacements, then passes the instruction to `runCommand` instead of the
+   dictation pipeline. `CommandRewriter` sends the instruction and the selection
+   to the notes model with `lowLatency`, the route Medium cleanup uses. The prompt
+   treats the selection as data and asks for only the resulting text. With no
+   selection, the model writes new text from the instruction. Replies lose
+   `<think>` blocks and echoed tags, and get the selection's outer whitespace
+   back. The wait is 20 seconds plus 1 per 100 selected characters, and 10 more
+   for CLIs. A selection over the model's limit (4,000 characters for Apple
+   Intelligence, 20,000 otherwise) is refused, not cut, because the paste
+   replaces the whole selection. An unavailable model, a timeout or an empty
+   reply shows an error. Nothing falls back to another model.
+4. Delivery uses the guarded paste to the original app only. Before it pastes
+   over a selection, it reads the selection again. If the selection changed, or
+   the field could not be read, the result is copied and the unpasted card is
+   shown. A paste replaces the selection, and the app's own ⌘Z restores it.
+5. Commands are not saved to History and start no correction learning. The
+   pasted text is the model's writing, not the user's words.
+
+The selection and the instruction go to the notes model the user chose. Apple
+Intelligence and Ollama run on this Mac. An API connection or a signed-in CLI
+sends them to that provider's service.
 
 ## Meeting notes flow
 
@@ -319,6 +406,32 @@ entries use `.parakeet` and a `modelName` that `ParakeetProvider.source(for:)` m
 to a FluidAudio version, repository and download size. The `modelName` must equal
 the repository's `folderName`, because FluidAudio loads files from that folder.
 Model IDs are persisted, so renaming/removing one requires a fallback or migration.
+`SpeechModel.isInstalledLocally` dispatches the installed check by engine, and
+`AppModel.models` and the Models page list catalog entries automatically.
+
+Set `minimumMacOS` when the weights need a newer macOS than the app. Models shows
+"Needs macOS N" instead of Download, and the provider refuses to download. Parakeet
+Redux and Phonon-2 use 15: FluidAudio's `AsrModels.checkPlatformSupport` rejects
+their compressed encoders before macOS 15. Canary 1B v2 uses 15 because its
+repository publishes only the int4 build, whose card requires macOS 15. Cohere
+Transcribe has no gate: its model card lists macOS 14, FluidAudio's Cohere guide
+lists iOS 18 for the INT8 encoder, and it has not been tried on macOS 14. A failed
+load leaves it uninstalled.
+
+FluidAudio's Parakeet-family repositories each need a `Repo` and `AsrModelVersion`
+case, so a family member FluidAudio adds later needs a FluidAudio update and a
+`source(for:)` line. There is deliberately no generic loader for unknown repos.
+
+Whisper entries name a folder of `argmaxinc/whisperkit-coreml` and the tokenizer
+WhisperKit would pick for it. WhisperKit picks the tokenizer only after loading a
+model, from the decoder's vocabulary size, but BetterWispr downloads it first. So
+`prepare` compares the loaded decoder's vocabulary size with the named tokenizer
+(51864 for `.en`, 51866 for large-v3, 51865 for the others) and fails before marking
+the model installed when they differ. English-only builds turn off WhisperKit's
+multilingual flag. Entries with `languages: ["en"]`, such as Distil-Whisper, which
+uses the multilingual large-v3 tokenizer, decode as English when the spoken
+language is automatic. Check that the folder is listed for Apple Silicon Macs in
+the repository's `config.json` before adding one.
 
 Verify that the model/tokenizer match before presenting the entry as supported.
 Download once, quit the app, disconnect networking, then prepare and transcribe
@@ -399,6 +512,39 @@ loads an installed booster with `CtcModels.loadDirect` and never downloads it;
 a missing or broken booster leaves plain Parakeet transcription unchanged.
 `transcribe` boosts only English or automatic-language dictation with a
 non-empty vocabulary and keeps the decoder's text when rescoring changes nothing.
+
+`CohereProvider` runs Cohere Transcribe 03-2026 through FluidAudio's
+`CoherePipeline`: an INT8 encoder and the cache-external v2 decoder from
+`FluidInference/cohere-transcribe-03-2026-coreml/q8`, about 2.2 GB in
+`Models/Cohere/cohere-transcribe/q8`. `ModelHub.download` runs only from an
+explicit installation; `prepare` loads with `CoherePipeline.loadModels`, which
+reads local files only, and writes the marker after they load. The model has no
+language detection, so a fixed spoken language outside its 14 fails with a clear
+error, and automatic uses the first preferred macOS language it supports, then
+English. The Settings picker still says "Detect automatically" for it. The decoder
+holds 108 tokens per call, prompt included, so `transcribe` splits audio into
+windows of at most 20 seconds at the quietest 100 ms after 12 seconds and joins
+the texts. It does not take vocabulary hints, so `WindowTerms.helps` leaves it
+out; vocabulary replacements still apply afterward. FluidAudio's decode loop
+doesn't check cancellation, so a cancelled dictation stops after the current
+window and its text is discarded. Core ML compiles the models on the first
+transcription in each process: in the 2026-10-13 check that call took about 77
+seconds and later ones about 2 seconds. The app's warm-up after launch and model
+selection takes that cost before the first dictation when it has time to finish.
+
+`CanaryProvider` runs NVIDIA Canary 1B v2 through FluidAudio's `CanaryManager`,
+which FluidAudio marks as beta. It downloads the int4 build of
+`FluidInference/canary-1b-v2-coreml` (about 570 MB) into `Models/Canary/canary-1b-v2`
+and loads it with `CanaryModels.load`, which reads local files only. FluidAudio
+ships only the English prompt, `CanaryConfig.promptEnTranscribePnc`. Canary 2's
+prompt names the source and target language with the same tokens, so
+`CanaryProvider.prompt(for:tokenizer:)` swaps the two `<|en|>` tokens for the
+spoken language's token from the model's vocabulary, which has all 25. `prepare`
+fails unless the rebuilt English prompt equals FluidAudio's. Language selection
+works as for Cohere. `CanaryManager` splits audio over 15 seconds into windows
+with 3 seconds of overlap and merges them. It does not check cancellation, so a
+cancelled dictation finishes decoding before its text is discarded. Canary takes
+no vocabulary hints and is not in `WindowTerms.helps`.
 
 ## Add an integration
 

@@ -33,8 +33,11 @@ public struct VocabularyEntry: Codable, Identifiable, Equatable, Sendable {
     public var id: UUID
     public var phrase: String
     public var replacement: String
-    /// True when the entry came from a correction the user made, not typed in Vocabulary.
+    /// True when BetterWispr learned the entry from a correction or a dictated on-screen name, not typed in Vocabulary.
     public var learned: Bool
+
+    /// The text this entry writes: its replacement, or the phrase itself for a spelling hint.
+    public var spelling: String { replacement.isEmpty ? phrase : replacement }
 
     public init(id: UUID = UUID(), phrase: String, replacement: String, learned: Bool = false) {
         self.id = id

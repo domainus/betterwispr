@@ -58,7 +58,7 @@ struct VocabularyView: View {
                                     .padding(.vertical, 1)
                                     .background(.tint.opacity(0.15), in: Capsule())
                                     .foregroundStyle(.tint)
-                                    .help("Added from a correction you made")
+                                    .help("Learned from a correction you made or a name you dictated")
                             }
                         }
                     }
@@ -71,7 +71,7 @@ struct VocabularyView: View {
                 }
             } footer: {
                 if model.settings.learnCorrections {
-                    Text("Entries marked Learned come from fixes you made to a dictation, in History or right after BetterWispr pasted it. Remove any you don’t want.")
+                    Text("Entries marked Learned come from fixes you made to a dictation and from names on screen that you dictated. Remove any you don’t want, or change a learned word back in your text. BetterWispr won’t learn it again.")
                         .foregroundStyle(.secondary)
                 }
             }

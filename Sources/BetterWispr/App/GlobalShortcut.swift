@@ -5,6 +5,10 @@ import IOKit.hidsystem
 
 @MainActor
 final class GlobalShortcut {
+    private static let signature: OSType = 0x42575350
+    private static var nextID: UInt32 = 1
+    /// Distinguishes this instance's hot key, since every instance's handler sees every hot key event of the app.
+    let hotKeyID: UInt32
     private var hotKey: EventHotKeyRef?
     private var handler: EventHandlerRef?
     private var localMonitor: Any?
@@ -12,6 +16,11 @@ final class GlobalShortcut {
     private var modifierPressed = false
     var onPress: (() -> Void)?
     var onRelease: (() -> Void)?
+
+    init() {
+        hotKeyID = Self.nextID
+        Self.nextID += 1
+    }
 
     func register(_ shortcut: DictationShortcut) throws {
         unregister()
@@ -31,7 +40,7 @@ final class GlobalShortcut {
             return
         }
         guard installHandler() else { throw ShortcutError.unavailable(shortcut) }
-        let identifier = EventHotKeyID(signature: 0x42575350, id: 1)
+        let identifier = EventHotKeyID(signature: Self.signature, id: hotKeyID)
         let status = RegisterEventHotKey(shortcut.keyCode, shortcut.modifiers.rawValue, identifier,
                                          GetApplicationEventTarget(), 0, &hotKey)
         guard status == noErr else { hotKey = nil; throw ShortcutError.unavailable(shortcut) }
@@ -53,6 +62,7 @@ final class GlobalShortcut {
         let pressed = event.modifierFlags.rawValue & UInt(mask) != 0
         guard pressed != modifierPressed else { return }
         // Only start with this modifier alone; always deliver its matching release.
+        // Arrow and F-keys also set `.function`, but only Fn itself sends flagsChanged with its key code.
         if pressed {
             let flags = event.modifierFlags.intersection([.control, .option, .shift, .command, .function])
             let ownFlag: NSEvent.ModifierFlags = switch DictationShortcut.modifier(for: shortcut.keyCode) {
@@ -60,6 +70,7 @@ final class GlobalShortcut {
             case .option: .option
             case .shift: .shift
             case .command: .command
+            case .function: .function
             default: []
             }
             guard flags == ownFlag else { return }
@@ -72,7 +83,8 @@ final class GlobalShortcut {
         kVK_Control: NX_DEVICELCTLKEYMASK, kVK_RightControl: NX_DEVICERCTLKEYMASK,
         kVK_Option: NX_DEVICELALTKEYMASK, kVK_RightOption: NX_DEVICERALTKEYMASK,
         kVK_Shift: NX_DEVICELSHIFTKEYMASK, kVK_RightShift: NX_DEVICERSHIFTKEYMASK,
-        kVK_Command: NX_DEVICELCMDKEYMASK, kVK_RightCommand: NX_DEVICERCMDKEYMASK
+        kVK_Command: NX_DEVICELCMDKEYMASK, kVK_RightCommand: NX_DEVICERCMDKEYMASK,
+        kVK_Function: NX_SECONDARYFNMASK // Fn has one key and no side-specific mask.
     ]
 
     private func installHandler() -> Bool {
@@ -82,12 +94,17 @@ final class GlobalShortcut {
         let context = Unmanaged.passUnretained(self).toOpaque()
         return InstallEventHandler(GetApplicationEventTarget(), { _, event, context in
             guard let event, let context else { return OSStatus(eventNotHandledErr) }
+            var identifier = EventHotKeyID()
+            guard GetEventParameter(event, EventParamName(kEventParamDirectObject), EventParamType(typeEventHotKeyID), nil,
+                                    MemoryLayout<EventHotKeyID>.size, nil, &identifier) == noErr else { return OSStatus(eventNotHandledErr) }
             let pressed = GetEventKind(event) == UInt32(kEventHotKeyPressed)
-            MainActor.assumeIsolated {
+            return MainActor.assumeIsolated {
                 let shortcut = Unmanaged<GlobalShortcut>.fromOpaque(context).takeUnretainedValue()
+                // Pass another instance's hot key on to the next handler in the chain.
+                guard identifier.signature == GlobalShortcut.signature, identifier.id == shortcut.hotKeyID else { return OSStatus(eventNotHandledErr) }
                 (pressed ? shortcut.onPress : shortcut.onRelease)?()
+                return noErr
             }
-            return noErr
         }, specs.count, &specs, context, &handler) == noErr
     }
 }

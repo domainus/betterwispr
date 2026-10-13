@@ -59,6 +59,15 @@ extension StyleTone {
     }
 }
 
+extension CleanupModel {
+    var title: String {
+        switch self {
+        case .notesModel: "Notes model"
+        case .s1Mini: "S1-mini by Superwhisper · Ollama"
+        }
+    }
+}
+
 extension CleanupLevel {
     var title: String { rawValue.capitalized }
 
@@ -66,7 +75,7 @@ extension CleanupLevel {
         switch self {
         case .none: "Keeps exactly what you said, including filler words."
         case .light: "Removes filler words like “um” and “you know”, stutters like “we we”, and corrections like “at 5, no, at 6”."
-        case .medium: "Also has your notes model fix self-corrections, numbers, punctuation and spoken lists in English dictation."
+        case .medium: "Also has your notes model or S1-mini fix self-corrections, numbers, punctuation and spoken lists in English dictation."
         }
     }
 }
@@ -104,26 +113,40 @@ struct StyleView: View {
                     .padding([.horizontal, .bottom], 16)
                     if model.settings.cleanup == .medium {
                         RowDivider()
-                        VStack(alignment: .leading, spacing: 8) {
-                            NotesModelPicker(model: model)
-                                .disabled(!model.canEditConnections)
-                            if case .unavailable(let reason) = MeetingNotesGenerator.availability(settings: model.settings) {
-                                Label("\(reason) Until then, Medium dictations get Light cleanup.", systemImage: "exclamationmark.triangle")
-                                    .font(.callout)
-                                    .foregroundStyle(.secondary)
+                        SettingRow("Medium edits with") {
+                            Picker("Medium edits with", selection: setting(\.cleanupModel).animation(reveal)) {
+                                ForEach(CleanupModel.allCases, id: \.self) { Text($0.title).tag($0) }
                             }
+                            .labelsHidden()
+                            .fixedSize()
                         }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 11)
                         .transition(.opacity)
                         RowDivider()
-                        SettingToggle("Use screen context", caption: Self.screenContextCaption, isOn: setting(\.useScreenContext).animation(reveal))
-                            .transition(.opacity)
-                        if model.settings.useScreenContext {
-                            RowDivider()
-                            SettingToggle("Read window text from the screen", caption: screenTextCaption, isOn: recognizeScreenText)
+                        if model.settings.cleanupModel == .s1Mini {
+                            S1MiniSettings(setup: model.s1Mini)
                                 .transition(.opacity)
+                        } else {
+                            VStack(alignment: .leading, spacing: 8) {
+                                NotesModelPicker(model: model)
+                                    .disabled(!model.canEditConnections)
+                                if case .unavailable(let reason) = MeetingNotesGenerator.availability(settings: model.settings) {
+                                    Label("\(reason) Until then, Medium dictations get Light cleanup.", systemImage: "exclamationmark.triangle")
+                                        .font(.callout)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 11)
+                            .transition(.opacity)
+                            RowDivider()
+                            SettingToggle("Use screen context", caption: Self.screenContextCaption, isOn: setting(\.useScreenContext).animation(reveal))
+                                .transition(.opacity)
+                            if model.settings.useScreenContext {
+                                RowDivider()
+                                SettingToggle("Read window text from the screen", caption: screenTextCaption, isOn: recognizeScreenText)
+                                    .transition(.opacity)
+                            }
                         }
                     }
                 } footer: {
@@ -208,6 +231,9 @@ struct StyleView: View {
     private var cleanupFooter: String {
         let original = "Your original words are never lost. In History, open Original transcription and choose Use Original."
         guard model.settings.cleanup == .medium else { return original }
+        if model.settings.cleanupModel == .s1Mini {
+            return "Medium edits English dictation with S1-mini by Superwhisper in Ollama on this Mac. Other languages, dictations over 700 words and edits that fail or rewrite too much get Light cleanup. \(original)"
+        }
         let destination = switch model.settings.notesSelection {
         case .apple: "Medium edits with Apple Intelligence on this Mac."
         case .ollama: "Medium edits with Ollama on this Mac."

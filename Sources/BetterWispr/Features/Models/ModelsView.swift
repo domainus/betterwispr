@@ -16,7 +16,7 @@ struct ModelsView: View {
             } header: {
                 Text("On this Mac")
             } footer: {
-                Label("These models process audio on your Mac. Parakeet and Whisper need an internet connection only for installation. Parakeet sizes include the 100 MB phrase booster, which downloads once and is shared.", systemImage: "internaldrive")
+                Label("These models process audio on your Mac. Parakeet, Cohere, Canary and Whisper need an internet connection only for installation. Parakeet sizes include the 100 MB phrase booster, which downloads once and is shared.", systemImage: "internaldrive")
                     .foregroundStyle(.secondary)
             }
 
@@ -172,6 +172,8 @@ struct ModelsView: View {
             } else if installed {
                 Button("Use") { model.selectModel(speechModel) }
                     .disabled(model.isBusy)
+            } else if let version = speechModel.minimumMacOS, !speechModel.isSupported {
+                Text("Needs macOS \(version)").foregroundStyle(.secondary)
             } else {
                 Button(installation == nil ? "Download" : "Retry") { model.installModel(speechModel) }
                     .disabled(model.isInstalling)
@@ -194,6 +196,8 @@ struct ModelsView: View {
         case .apple: "System speech"
         case .whisperKit: "WhisperKit · Apple Silicon"
         case .parakeet: "Parakeet · Neural Engine"
+        case .cohere: "Cohere · Apple Silicon"
+        case .canary: "Canary · Neural Engine"
         case .api: "API connection"
         }
     }

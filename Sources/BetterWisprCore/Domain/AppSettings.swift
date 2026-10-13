@@ -8,6 +8,14 @@ public enum AppTheme: String, Codable, CaseIterable, Sendable {
     case system, light, dark
 }
 
+/// What Medium cleanup edits English dictation with.
+public enum CleanupModel: String, Codable, CaseIterable, Sendable {
+    /// The notes model chosen in Models, with BetterWispr's polish prompt.
+    case notesModel
+    /// S1-mini by Superwhisper through Ollama on this Mac; see `S1MiniCleaner`.
+    case s1Mini
+}
+
 public struct AppSettings: Codable, Equatable, Sendable {
     public var selectedModelID: String = "apple"
     public var speechConnections: [SpeechConnection] = []
@@ -32,8 +40,15 @@ public struct AppSettings: Codable, Equatable, Sendable {
     public var silenceThreshold: Float = 0.002
     public var dictationMode: DictationMode = .hold
     public var shortcut: DictationShortcut = .optionSpace
+    /// Turns on the Command Mode shortcut, which edits the selection with the notes model chosen in Models.
+    public var commandMode: Bool = false
+    /// Nil uses `DictationShortcut.commandDefault`, so the default can change without migrating saved settings.
+    public var commandShortcut: DictationShortcut?
     public var learnCorrections: Bool = true
+    /// Hints names from the window the user dictates into to Parakeet and Apple speech; read on this Mac and never stored.
+    public var useWindowSpelling: Bool = true
     public var cleanup: CleanupLevel = .light
+    public var cleanupModel: CleanupModel = .notesModel
     /// Sends selected text, clipboard text and the focused window's text to the notes model during Medium cleanup.
     public var useScreenContext: Bool = false
     /// Reads window text from pixels when the app exposes too little through Accessibility; needs Screen Recording.
@@ -112,9 +127,13 @@ public struct AppSettings: Codable, Equatable, Sendable {
         silenceThreshold = try container.decode(Float.self, forKey: .silenceThreshold)
         dictationMode = try container.decodeIfPresent(DictationMode.self, forKey: .dictationMode) ?? .hold
         shortcut = try container.decodeIfPresent(DictationShortcut.self, forKey: .shortcut) ?? .optionSpace
+        commandMode = try container.decodeIfPresent(Bool.self, forKey: .commandMode) ?? false
+        commandShortcut = try container.decodeIfPresent(DictationShortcut.self, forKey: .commandShortcut)
         microphone = try container.decodeIfPresent(AudioInputDevice.self, forKey: .microphone)
         learnCorrections = try container.decodeIfPresent(Bool.self, forKey: .learnCorrections) ?? true
+        useWindowSpelling = try container.decodeIfPresent(Bool.self, forKey: .useWindowSpelling) ?? true
         cleanup = try container.decodeIfPresent(CleanupLevel.self, forKey: .cleanup) ?? .light
+        cleanupModel = try container.decodeIfPresent(CleanupModel.self, forKey: .cleanupModel) ?? .notesModel
         useScreenContext = try container.decodeIfPresent(Bool.self, forKey: .useScreenContext) ?? false
         recognizeScreenText = try container.decodeIfPresent(Bool.self, forKey: .recognizeScreenText) ?? false
         styles = try container.decodeIfPresent([StyleContext: StyleTone].self, forKey: .styles) ?? [:]

@@ -19,7 +19,8 @@ public final class CorrectionWatcher {
             var inserted = inserted
             var baseline: String?
             var settled = SettledText("")
-            for _ in 0..<60 {
+            // Two minutes of half-second polls, so a fix made after rereading still counts; a new dictation or a sent message ends it sooner.
+            for _ in 0..<240 {
                 guard !Task.isCancelled, !IsSecureEventInputEnabled(), let raw = Self.value(of: field), raw.count <= 100_000 else { break }
                 let value = Self.comparable(raw)
                 if let base = baseline {

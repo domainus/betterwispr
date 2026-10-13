@@ -35,8 +35,8 @@ struct SettingsView: View {
                     ShortcutRecorder(model: model)
                     RowDivider()
                     SettingRow("Behavior", caption: model.settings.dictationMode == .hold
-                        ? "Hold to speak and release to finish. A quick tap starts hands-free dictation."
-                        : "Press once to speak. Press again or click ✓ to finish.") {
+                        ? "Hold to talk and release to finish. Tap or double-tap for hands-free, then press again to finish."
+                        : "Press or double-tap to talk hands-free. Press again or click ✓ to finish.") {
                         Picker("Behavior", selection: setting(\.dictationMode)) {
                             Text("Hold to talk").tag(DictationMode.hold)
                             Text("Press to toggle").tag(DictationMode.toggle)
@@ -45,6 +45,14 @@ struct SettingsView: View {
                         .labelsHidden()
                         .fixedSize()
                         .disabled(model.isBusy)
+                    }
+                    RowDivider()
+                    SettingToggle("Command Mode", caption: "Select text, hold the command shortcut and say what to change, such as “make this shorter” or “turn this into bullets”. With nothing selected, it writes new text at the cursor. Your selection and instruction go to the notes model chosen in Models.",
+                                  isOn: Binding(get: { model.settings.commandMode }, set: { model.setCommandMode($0) }))
+                        .disabled(model.isBusy)
+                    if model.settings.commandMode {
+                        RowDivider()
+                        ShortcutRecorder(model: model, command: true)
                     }
                 }
 
@@ -58,7 +66,7 @@ struct SettingsView: View {
                     RowDivider()
                     SettingRow("Spoken language", caption: "A fixed language gives more consistent results.") {
                         Picker("Spoken language", selection: setting(\.language)) {
-                            Text(model.selectedModel.engine == .apple ? "System language" : "Detect automatically").tag("auto")
+                            Text(automaticLanguageName).tag("auto")
                             ForEach(languageChoices, id: \.code) { Text($0.name).tag($0.code) }
                         }
                         .labelsHidden()
@@ -68,6 +76,8 @@ struct SettingsView: View {
                     SettingRow("Vocabulary", caption: vocabularyCaption) {
                         Button("Open Vocabulary") { model.selectedPage = .vocabulary }
                     }
+                    RowDivider()
+                    SettingToggle("Spell names from the window", caption: "Helps the speech model spell names and product words shown where you dictate, such as the people in a chat. Works with Apple models, and in English with Parakeet’s phrase booster. With any model, names you dictate from the window can be learned. The window is read on this Mac through Accessibility, never saved and never sent.", isOn: setting(\.useWindowSpelling))
                     RowDivider()
                     SettingRow("Input sensitivity", caption: "Lower filters help quiet voices but let more background noise through.") {
                         Picker("Input sensitivity", selection: setting(\.silenceThreshold)) {
@@ -87,7 +97,7 @@ struct SettingsView: View {
                     RowDivider()
                     SettingToggle("Copy to clipboard", caption: "Keep each dictation ready to paste again. When off, your clipboard is left as it was.", isOn: setting(\.copyToClipboard))
                     RowDivider()
-                    SettingToggle("Learn from my corrections", caption: "Words you fix in History, or in the text field within 30 seconds of a paste, are added to Vocabulary. With Medium cleanup, each English fix and a few words around it are first reviewed by the selected notes model.", isOn: setting(\.learnCorrections))
+                    SettingToggle("Learn words automatically", caption: "Adds words you fix in History, or in the text field within two minutes of a paste, to Vocabulary, plus names from the window that you dictate. Change a learned word back or delete it, and it’s not learned again. With Medium cleanup, each English fix and a few words around it are first reviewed by the selected notes model.", isOn: setting(\.learnCorrections))
                 }
 
                 SettingsSection("App") {
@@ -159,6 +169,15 @@ struct SettingsView: View {
         return choices + [(code: current, name: "\(name) (not supported by \(selected.name))")]
     }
 
+    /// Apple uses the system language; Cohere and Canary can't detect one, so they use the Mac's language or English.
+    private var automaticLanguageName: String {
+        switch model.selectedModel.engine {
+        case .apple: "System language"
+        case .cohere, .canary: "Mac’s language"
+        default: "Detect automatically"
+        }
+    }
+
     private var vocabularyCaption: String {
         guard model.selectedModel.engine == .parakeet else {
             return "Add the names and terms you say often so they’re written your way."
@@ -178,31 +197,35 @@ struct SettingsView: View {
 
 private struct ShortcutRecorder: View {
     let model: AppModel
+    /// Records the Command Mode shortcut instead of the dictation shortcut.
+    var command = false
     @State private var monitor: Any?
     @State private var held: ShortcutModifiers = []
     @State private var modifierCandidate: DictationShortcut?
     @State private var feedback: String?
 
     private var isCapturing: Bool { monitor != nil }
-    private var shortcut: DictationShortcut { model.settings.shortcut }
+    private var shortcut: DictationShortcut { command ? model.commandShortcut : model.settings.shortcut }
+    private var defaultShortcut: DictationShortcut { command ? .commandDefault : .optionSpace }
+    private var title: String { command ? "Command shortcut" : "Keyboard shortcut" }
 
     var body: some View {
-        SettingRow("Keyboard shortcut", caption: caption) {
+        SettingRow(title, caption: caption) {
             HStack(spacing: 6) {
-                if shortcut != .optionSpace, !isCapturing {
-                    Button("Reset to \(DictationShortcut.optionSpace.spokenName)", systemImage: "arrow.counterclockwise") {
+                if shortcut != defaultShortcut, !isCapturing {
+                    Button("Reset to \(defaultShortcut.spokenName)", systemImage: "arrow.counterclockwise") {
                         stop()
-                        model.changeShortcut(.optionSpace)
+                        change(defaultShortcut)
                     }
                     .labelStyle(.iconOnly)
                     .buttonStyle(.borderless)
                     .foregroundStyle(.secondary)
-                    .help("Reset to \(DictationShortcut.optionSpace.displayName)")
+                    .help("Reset to \(defaultShortcut.displayName)")
                     .transition(.opacity)
                 }
                 recordButton
-                    .accessibilityLabel(isCapturing ? "Keyboard shortcut, waiting for keys" : "Keyboard shortcut, \(shortcut.spokenName)")
-                    .accessibilityHint("Click, then press a shortcut, or press and release a modifier key such as Option.")
+                    .accessibilityLabel(isCapturing ? "\(title), waiting for keys" : "\(title), \(shortcut.spokenName)")
+                    .accessibilityHint("Click, then press a shortcut, or press and release a modifier key such as Option or Fn.")
             }
             .disabled(model.isBusy)
         }
@@ -213,8 +236,16 @@ private struct ShortcutRecorder: View {
     }
 
     private var caption: String? {
-        if isCapturing { return feedback ?? "Press and release ⌃, ⌥, ⇧ or ⌘ alone, use a key combination, or press an F-key. Esc cancels." }
-        return shortcut.isModifierOnly ? "Needs Accessibility. Uses the left or right key you recorded." : "Starts dictation from any app."
+        if isCapturing { return feedback ?? "Press and release ⌃, ⌥, ⇧, ⌘ or Fn alone, use a key combination, or press an F-key. Esc cancels." }
+        if shortcut.keyCode == UInt32(kVK_Function) {
+            return "Needs Accessibility. In System Settings › Keyboard, set “Press 🌐 key to” to Do Nothing. Some external keyboards don’t send Fn."
+        }
+        if shortcut.isModifierOnly { return "Needs Accessibility. Uses the left or right key you recorded." }
+        return command ? "Works like the dictation shortcut, with the Behavior chosen above." : "Starts dictation from any app."
+    }
+
+    private func change(_ shortcut: DictationShortcut) {
+        if command { model.changeCommandShortcut(shortcut) } else { model.changeShortcut(shortcut) }
     }
 
     @ViewBuilder private var recordButton: some View {
@@ -250,7 +281,9 @@ private struct ShortcutRecorder: View {
     private func capture(_ event: NSEvent) {
         let flags = event.modifierFlags
         let modifiers = ShortcutModifiers(Self.modifierFlags.filter { flags.contains($0.flag) }.map(\.modifier))
-        guard event.type == .keyDown else { return modifiersChanged(to: modifiers, keyCode: Int(event.keyCode)) }
+        guard event.type == .keyDown else {
+            return modifiersChanged(to: modifiers, keyCode: Int(event.keyCode), functionDown: flags.contains(.function))
+        }
         modifierCandidate = nil
         if Int(event.keyCode) == kVK_Escape, modifiers.isEmpty { return stop() }
         let key = Self.keyNames[Int(event.keyCode)] ?? event.characters(byApplyingModifiers: [])?.uppercased() ?? ""
@@ -260,18 +293,22 @@ private struct ShortcutRecorder: View {
                                    : "\(pressed) is for typing, so it can’t start dictation. Hold ⌃, ⌥ or ⌘ with it."
             return NSSound.beep()
         }
-        model.changeShortcut(shortcut)
+        change(shortcut)
         stop()
     }
 
-    private func modifiersChanged(to modifiers: ShortcutModifiers, keyCode: Int) {
+    private func modifiersChanged(to modifiers: ShortcutModifiers, keyCode: Int, functionDown: Bool) {
         if let candidate = modifierCandidate, candidate.keyCode == UInt32(keyCode), modifiers.isEmpty {
-            model.changeShortcut(candidate)
+            change(candidate)
             return stop()
         }
         modifierCandidate = nil
         if keyCode == kVK_Function {
-            feedback = "Fn can’t be a shortcut. Try ⌥ alone or an F-key such as F5."
+            // Fn sets none of the other modifier flags, so its own flag tells a lone press from a release.
+            if functionDown, modifiers.isEmpty, held.isEmpty {
+                feedback = nil
+                modifierCandidate = DictationShortcut(keyCode: UInt32(keyCode), modifiers: [], key: "Fn")
+            }
         } else if held.isEmpty, !modifiers.isEmpty {
             feedback = nil
             if modifiers == DictationShortcut.modifier(for: UInt32(keyCode)), let key = Self.keyNames[keyCode] {

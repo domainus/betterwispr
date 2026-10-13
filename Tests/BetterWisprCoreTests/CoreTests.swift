@@ -102,7 +102,7 @@ import Testing
     }
 }
 
-@Test(arguments: [54, 55, 56, 58, 59, 60, 61, 62])
+@Test(arguments: [54, 55, 56, 58, 59, 60, 61, 62, 63])
 func standaloneModifiersRoundTripThroughSettings(keyCode: UInt32) throws {
     var settings = AppSettings()
     settings.shortcut = try #require(DictationShortcut(keyCode: keyCode, modifiers: [], key: "Modifier"))
@@ -407,6 +407,8 @@ func standaloneModifiersRoundTripThroughSettings(keyCode: UInt32) throws {
     #expect(entry.learned == false)
     var settings = try jsonDroppingKey(AppSettings(), "learnCorrections")
     #expect(try JSONDecoder().decode(AppSettings.self, from: settings).learnCorrections)
+    settings = try jsonDroppingKey(AppSettings(), "useWindowSpelling")
+    #expect(try JSONDecoder().decode(AppSettings.self, from: settings).useWindowSpelling)
     settings = try JSONEncoder().encode(VocabularyEntry(phrase: "kv", replacement: "KV", learned: true))
     #expect(try JSONDecoder().decode(VocabularyEntry.self, from: settings).learned)
 }

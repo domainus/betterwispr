@@ -4,6 +4,37 @@ All notable changes to BetterWispr are listed here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/). The current version lives in `VERSION`.
 
+## [Unreleased]
+
+### Added
+- New on-device models in Models:
+  - Parakeet Redux (smaller, 25 languages) and Phonon-2 (English), both needing macOS 15.
+  - Cohere Transcribe (14 languages, including Arabic, Chinese, Japanese and Korean; about 2.2 GB). Its first transcription after each launch can take over a minute.
+  - Canary 1B v2 (25 European languages, beta, macOS 15).
+  - Whisper Large v3, Distil-Whisper Large v3 (English) and Whisper Base.
+
+  Cohere and Canary can't detect the language. With the language set to automatic, they use your Mac's language if they support it, otherwise English, and Settings calls this "Mac's language". They take no vocabulary or window hints, but vocabulary replacements still apply.
+- Snippets, a new page next to Vocabulary. Save text you type often, such as an address or a scheduling link, and say its words while dictating to insert it exactly as saved. The longest match wins. Edits to inserted text are not learned as corrections. Snippets stay on this Mac and do not apply to meetings.
+- Command Mode, off by default, as in Wispr Flow. Turn it on in Settings > Shortcut, select text, hold ⌥⇧ Space and say what to change, such as "make this shorter" or "turn this into bullets". The selection is rewritten in place, and ⌘Z in the app undoes it. With nothing selected, it writes new text at the cursor. The command shortcut taps and double-taps like the dictation shortcut. It uses the notes model chosen in Models, so your selection goes to that model, and to that provider's service if you chose an API connection or a CLI. Commands are not saved to History or learned from.
+- Medium cleanup can use S1-mini by Superwhisper, a small English transcript cleaner that runs in Ollama on your Mac, so Medium works without a cloud service. Choose it in Style. It downloads only when you click Download S1-mini, and notes-model cleanup stays the default. S1-mini gets no vocabulary, screen context or mode instructions, because its prompt format has no place for them; vocabulary replacements still run afterwards. Its output has not been tested against the real model yet.
+- Double-tap the dictation shortcut to dictate hands-free, as in Wispr Flow. The second tap no longer stops the recording; press once more to finish. Holding still works as push-to-talk, and a single quick tap still keeps listening.
+- Fn (🌐) alone can be the dictation shortcut. It needs Accessibility. Set System Settings › Keyboard › "Press 🌐 key to" to Do Nothing so macOS doesn't also open the emoji picker or Apple Dictation. Some external keyboards don't send Fn.
+- Spell names from the window, in Settings > Microphone and language and on by default. While you record, BetterWispr reads the window you dictate into through Accessibility and picks out up to 20 names and product words, such as "Kartik" in a Slack chat or "PostHog" in a document. It passes them to the speech model as spelling hints for that one dictation, after your vocabulary. It works with Apple models, and in English with Parakeet's phrase booster, which changes a word only when the name fits your voice better. Whisper gets no window hints, because keyword prompts made Whisper less accurate overall in published tests. The window text is not saved or sent, the clipboard is not read, and nothing is read while a password field is active. Accuracy with these hints has not been measured yet.
+- BetterWispr learns the names you use, as Wispr Flow does. When a dictation spells a name from the window exactly, such as "Kartik" in a chat, it adds the name to Vocabulary as a Learned spelling hint and shows a "Learned" toast with Undo. This uses the "Learn words automatically" setting. It works with every speech model, including Whisper and API connections, although only Apple and Parakeet use the window's names while recognizing.
+- Very common first names such as Sarah or John are not learned, as in Wispr Flow, because speech models already spell them.
+- Words learned within a few seconds of each other share one "Learned" toast, and its Undo removes them all.
+
+### Changed
+- "Learn from my corrections" is now "Learn words automatically", since it also learns names you dictate.
+- A learned word you delete, undo or change back is never learned again, as in Wispr Flow. Adding it yourself in Vocabulary clears that.
+- Learning skips fixes that contain a path, an email address or a code symbol, such as "docs/README" or "user_id".
+- Learn words automatically watches the text field for two minutes after a paste instead of 30 seconds, so a fix you make after rereading still counts. Sending the message or starting another dictation still ends it.
+- Changing a learned word back now forgets it. If BetterWispr learned "meet" as "meat" and you change "meat" back to "meet", it removes that entry and shows a "Stopped replacing" toast with Undo, instead of keeping the wrong replacement.
+- The first dictation into a freshly launched Electron app such as Slack now gets its window text for screen context. BetterWispr asks the app to expose its window and reads it again after half a second.
+
+### Fixed
+- English-only Whisper models no longer run language detection, and a Whisper model whose files don't match its tokenizer is no longer marked installed.
+
 ## [0.1.5] - 2026-10-12
 
 ### Added

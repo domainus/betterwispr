@@ -42,7 +42,8 @@ func run() async throws {
     }
     if arguments == ["--list-models"] {
         for model in SpeechModel.catalog {
-            print("\(model.id)\t\(model.name)\t\(model.sizeLabel)")
+            let requirement = model.isSupported ? "" : model.minimumMacOS.map { "\tneeds macOS \($0)" } ?? ""
+            print("\(model.id)\t\(model.name)\t\(model.sizeLabel)\(requirement)")
         }
         return
     }
@@ -82,6 +83,8 @@ func run() async throws {
     case .apple: throw CLIError.usage("Apple speech requires permissions granted through the macOS app. Select a Parakeet or Whisper model in the CLI.")
     case .whisperKit: provider = WhisperKitProvider()
     case .parakeet: provider = ParakeetProvider()
+    case .cohere: provider = CohereProvider()
+    case .canary: provider = CanaryProvider()
     case .api: throw CLIError.usage("Configure API connections in the macOS app. The CLI uses local models only.")
     }
     let clock = ContinuousClock()

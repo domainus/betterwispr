@@ -41,3 +41,32 @@ import Testing
     try send(kVK_Option, [])
     #expect(transitions == [true, false, true, false])
 }
+
+@Test @MainActor func standaloneFnDeliversOnlyItsOwnPressAndRelease() throws {
+    let listener = GlobalShortcut()
+    let shortcut = try #require(DictationShortcut(keyCode: UInt32(kVK_Function), modifiers: [], key: "Fn"))
+    #expect(shortcut.isModifierOnly && shortcut.displayName == "Fn")
+    #expect(DictationShortcut(keyCode: 96, modifiers: .function, key: "F5") == nil)
+    #expect(DictationShortcut(keyCode: 49, modifiers: [.function, .option], key: "Space") == nil)
+    var transitions: [Bool] = []
+    listener.onPress = { transitions.append(true) }
+    listener.onRelease = { transitions.append(false) }
+
+    func send(_ type: NSEvent.EventType, _ keyCode: Int, _ flags: NSEvent.ModifierFlags) throws {
+        let event = try #require(NSEvent.keyEvent(with: type, location: .zero, modifierFlags: flags,
+                                                timestamp: 0, windowNumber: 0, context: nil, characters: "",
+                                                charactersIgnoringModifiers: "", isARepeat: false, keyCode: UInt16(keyCode)))
+        listener.handleModifierEvent(event, shortcut: shortcut)
+    }
+
+    try send(.keyDown, kVK_LeftArrow, .function) // Arrow and F-keys carry the Fn flag too.
+    try send(.keyDown, kVK_F5, .function)
+    try send(.flagsChanged, kVK_Function, [.function, .option])
+    try send(.flagsChanged, kVK_Function, .option)
+    #expect(transitions.isEmpty)
+
+    try send(.flagsChanged, kVK_Function, .function)
+    try send(.keyDown, kVK_LeftArrow, .function)
+    try send(.flagsChanged, kVK_Function, [])
+    #expect(transitions == [true, false])
+}
